@@ -24,6 +24,7 @@ cache and its workspace/archive accounting, and writes an audit entry.*
 - **Permanently delete** an archived session — session log, derived projection cache, archive
   membership, pin state and workspace accounting, all in one operation
 - Restore (un-archive) and re-archive a session without leaving the panel
+- **Archive** a session that is not archived yet — the step that makes a released session deletable
 - **Release** a session that is still in memory — stop the running turn and drop it from the Host's
   store while keeping the log on disk, so the delete becomes available
 - Bulk delete / bulk restore with a confirmation dialog that lists every id and the total size
@@ -365,11 +366,11 @@ still held in memory (and is not the session you are looking at):
    same for the selection, and only counts the rows that are actually releasable.
 2. Release stops the running turn and drops the session from the Host's in-memory store. **Nothing on
    disk is touched** — the log and the projection cache stay exactly where they were.
-3. The panel re-reads the list. The row loses its `live`/`running` badges and, because it is now
-   merely an archived session on disk, its `删除` button enables. If it was not archived, turn on
-   `allowDeleteUnarchived` to delete it.
+3. The panel re-reads the list. The row loses its `live`/`running` badges. **Release does not
+   archive** — if the session was never archived, the `删除` button stays disabled and the notice says
+   so; use `归档` on the same row (or turn on `allowDeleteUnarchived`) and the delete enables.
 
-So the normal flow for "this running session has to go" is **释放 → 删除**, with no configuration
+So the full flow for "this running session has to go" is **释放 → 归档 → 删除**, with no configuration
 change at all. The current session is never offered for release: tearing down the Host object your
 own view is bound to would break the UI you are using.
 

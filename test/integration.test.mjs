@@ -510,6 +510,44 @@ test('a session that is not live reports no release work', async (t) => {
   assert.deepEqual(body.results[0].failed, {});
 });
 
+test('release, then archive, then delete is the full path for an unarchived live session', async (t) => {
+  const fx = await fixture();
+  t.after(fx.cleanup);
+  // A live session that was never archived: the common case for a running one.
+  const h = fakeCtx({ root: fx.persistence, archived: [], live: [A] });
+  const config = normalizeConfig({}).value;
+
+  // 1. delete is refused twice over: live, and not archived.
+  const first = await dispatch(h.ctx, config, 'delete', { ids: [A] });
+  assert.deepEqual(first.body.deleted, []);
+  assert.deepEqual(first.body.skipped, [{ id: A, reason: 'live' }]);
+
+  // 2. releasing frees the memory and keeps every artifact.
+  const released = await dispatch(h.ctx, config, 'release', { ids: [A] });
+  assert.deepEqual(released.body.released, [A]);
+  assert.equal(released.body.results[0].removed.detached, true);
+  assert.equal(existsSync(fx.sessions[A]), true);
+
+  // 3. now it is merely on disk and unarchived, so deletion is still refused —
+  //    but for the reason the UI can act on.
+  const second = await dispatch(h.ctx, config, 'delete', { ids: [A] });
+  assert.deepEqual(second.body.skipped, [{ id: A, reason: 'not-archived' }]);
+  const row = await dispatch(h.ctx, config, 'list', {});
+  const entry = row.body.items.find((item) => item.id === A);
+  assert.equal(entry.live, false);
+  assert.equal(entry.archived, false);
+  assert.equal(entry.deletable, false);
+  assert.equal(entry.releasable, false, 'nothing left to release');
+
+  // 4. archive it, and the delete finally lands.
+  const archived = await dispatch(h.ctx, config, 'archive', { ids: [A] });
+  assert.equal(archived.body.ok, true);
+  assert.deepEqual(h.archived, [A]);
+  const deleted = await dispatch(h.ctx, config, 'delete', { ids: [A] });
+  assert.deepEqual(deleted.body.deleted, [A]);
+  assert.equal(existsSync(fx.sessions[A]), false);
+});
+
 test('residue cleanup also releases a session left in memory', async (t) => {
   const fx = await fixture();
   t.after(fx.cleanup);

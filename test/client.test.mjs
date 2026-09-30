@@ -495,6 +495,19 @@ test('the release action is wired end to end in the bundle', () => {
 	assert.match(SOURCE, /releasable = \(live \|\| running\) && !current/);
 	assert.match(SOURCE, /t\('bulk\.release'/);
 
+	// The step that unblocks a released-but-unarchived session.
+	assert.match(SOURCE, /callHost\('archive', \{ ids: ids \}\)/);
+	assert.match(SOURCE, /onArchive: archiveRows/);
+	assert.match(SOURCE, /row\.archived !== true && row\.current !== true \? h\('button'/);
+	assert.match(SOURCE, /t\('bulk\.archive'/);
+	assert.match(SOURCE, /t\('notice\.releasedThenArchive'/);
+	assert.match(SOURCE, /t\('notice\.archived', \{ n: done \}\)/);
+	assert.match(SOURCE, /function needsArchive\(ids\)/);
+
+	// The failure path surfaces the Host's own error code, not a bare "HTTP 400".
+	assert.match(SOURCE, /async function readErrorBody\(response\)/);
+	assert.match(SOURCE, /httpStatus: response\.status/);
+
 	// The handler re-reads the list instead of dropping rows, since nothing was deleted.
 	assert.match(SOURCE, /t\('notice\.released', \{ n: done \}\)/);
 	assert.match(SOURCE, /t\('notice\.releasedPartly', \{ n: done, m: body\.failedIds\.length \}\)/);
