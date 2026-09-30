@@ -30,6 +30,7 @@
     "lib/**/*.js",
     "locale/*.json",
     "icon.svg",
+    "docs/*.png",
     "README.md",
     "README.zh-CN.md",
     "SPEC.md",

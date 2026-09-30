@@ -12,6 +12,27 @@ cache, and its workspace/archive accounting, and it is recorded in an audit log.
 
 [中文](README.zh-CN.md) · [interface contract](SPEC.md) · [issues](https://github.com/qiaofugui/dsh-session-manager/issues)
 
+![dsh-session-manager screenshot — the DSH session manager panel listing archived sessions, with search, multi-select, bulk restore and permanent delete](docs/screenshot.png)
+
+*The `会话管理` panel: archived sessions in one list, with per-row size, search, multi-select and an
+irreversible delete behind a confirm dialog. Delete removes the session log, its derived projection
+cache and its workspace/archive accounting, and writes an audit entry.*
+
+**Features**
+
+- Browse every archived session and every session on disk, with per-session log and cache size
+- **Permanently delete** an archived session — session log, derived projection cache, archive
+  membership, pin state and workspace accounting, all in one operation
+- Restore (un-archive) and re-archive a session without leaving the panel
+- Bulk delete / bulk restore with a confirmation dialog that lists every id and the total size
+- Safety by default: the current session, running sessions and live sessions are refused unless you
+  opt in; an explicit protection list always wins
+- An audit log records every delete, each failed step, and the bytes reclaimed
+- Zero npm dependencies on the Host side and zero client-package imports on the browser side, so it
+  can never fail composition
+- Capability-probed: every optional Host service, slot, route and storage layout degrades instead of
+  throwing
+
 ---
 
 ## 0. Quick install
