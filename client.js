@@ -97,11 +97,13 @@ window.__ModuleLoader__.load({
 			'badge.pinned': '已置顶',
 			'row.delete': '删除',
 			'row.restore': '恢复',
-			'bulk.selected': '已选 {n} 项',
+			'row.release': '释放',
+			'row.release.title': '从内存中释放此会话：停止正在运行的回合，日志保留在磁盘上。释放后即可删除。',			'bulk.selected': '已选 {n} 项',
 			'bulk.selectAll': '全选',
 			'bulk.clear': '取消选择',
 			'bulk.delete': '删除选中 ({n})',
 			'bulk.restore': '恢复选中 ({n})',
+			'bulk.release': '释放选中 ({n})',
 			'bulk.hint': '勾选会话后可批量删除或恢复。',
 			'select.row': '选择会话 {id}',
 			'title.untitled': '未命名',
@@ -126,6 +128,10 @@ window.__ModuleLoader__.load({
 			'notice.restoreFailed': '恢复失败：{message}',
 			'notice.skipped': '已跳过 {n} 个不可删除的会话（含当前会话或未归档会话）',
 			'notice.nothingSelected': '请先选择要操作的会话',
+			'notice.nothingReleasable': '所选会话都无需释放（只有仍在内存中的会话可以释放）',
+			'notice.released': '已释放 {n} 个会话，日志仍保留在磁盘上',
+			'notice.releasedPartly': '已释放 {n} 个，{m} 个失败',
+			'notice.releaseFailed': '释放失败：{message}',
 			'notice.currentOnly': '当前打开的会话不能删除，已取消操作',
 			'confirm.title': '永久删除会话',
 			'confirm.count': '将要永久删除 {n} 个会话',
@@ -202,11 +208,14 @@ window.__ModuleLoader__.load({
 			'badge.pinned': 'Pinned',
 			'row.delete': 'Delete',
 			'row.restore': 'Restore',
+			'row.release': 'Release',
+			'row.release.title': 'Free this session from memory: stop the running turn, keep the log on disk. Deleting becomes possible afterwards.',
 			'bulk.selected': '{n} selected',
 			'bulk.selectAll': 'Select all',
 			'bulk.clear': 'Clear selection',
 			'bulk.delete': 'Delete selected ({n})',
 			'bulk.restore': 'Restore selected ({n})',
+			'bulk.release': 'Release selected ({n})',
 			'bulk.hint': 'Tick sessions to delete or restore them in bulk.',
 			'select.row': 'Select session {id}',
 			'title.untitled': 'Untitled',
@@ -231,6 +240,10 @@ window.__ModuleLoader__.load({
 			'notice.restoreFailed': 'Restore failed: {message}',
 			'notice.skipped': 'Skipped {n} non-deletable sessions (current or unarchived)',
 			'notice.nothingSelected': 'Select at least one session first',
+			'notice.nothingReleasable': 'None of the selected sessions need releasing (only sessions still held in memory can be)',
+			'notice.released': 'Released {n} sessions; their logs stay on disk',
+			'notice.releasedPartly': 'Released {n}, {m} failed',
+			'notice.releaseFailed': 'Release failed: {message}',
 			'notice.currentOnly': 'The currently open session cannot be deleted; the request was cancelled',
 			'confirm.title': 'Permanently delete sessions',
 			'confirm.count': 'About to permanently delete {n} sessions',
@@ -579,6 +592,24 @@ window.__ModuleLoader__.load({
 			return callHost('restore', { ids: ids });
 		}
 
+		/**
+		 * Free the in-memory copies of sessions, keeping their logs on disk.
+		 *
+		 * This is what unblocks a `live`/`running` row: the Host stops the running
+		 * turn and drops the session from its store, after which the row becomes
+		 * deletable on its own merits. Nothing on disk is touched, so the list is
+		 * re-fetched rather than the row being dropped locally.
+		 * @param ids - session ids to release.
+		 * @param currentSessionId - the open session, which the Host refuses to release.
+		 * @returns the same shape every other op returns.
+		 */
+		async function releaseSessions(ids, currentSessionId) {
+			return callHost('release', {
+				ids: ids,
+				currentSessionId: typeof currentSessionId === 'string' ? currentSessionId : '',
+			});
+		}
+
 		function markRemoved(ids) {
 			if (!ids || ids.length === 0) return;
 			removedBus.set(function (current) {
@@ -738,6 +769,13 @@ window.__ModuleLoader__.load({
 			if (current) skipReason = 'current';
 			var deletable = host && typeof host.deletable === 'boolean' && !current ? host.deletable === true : skipReason === null;
 
+			// "Release" frees the in-memory session while the log stays on disk, so it is
+			// offered exactly where a delete is refused for being live or running — never
+			// for the open session, which must stay attached to the running UI.
+			var releasable = false;
+			if (host && typeof host.releasable === 'boolean') releasable = host.releasable;
+			else releasable = (live || running) && !current;
+
 			return {
 				id: id,
 				title: base.title,
@@ -752,6 +790,9 @@ window.__ModuleLoader__.load({
 				noLog: noLog,
 				deletable: deletable,
 				skipReason: deletable ? null : skipReason,
+				// Only the Host knows whether the store still holds this session, so
+				// honour its `releasable` flag and fall back to the visible flags.
+				releasable: releasable,
 				clientKnown: base.clientKnown,
 				hostKnown: host !== null,
 				path: host && typeof host.path === 'string' ? host.path : '',
@@ -1354,6 +1395,14 @@ window.__ModuleLoader__.load({
 						h('span', { style: styles.metaItem }, sizeText),
 						row.deletable !== true && row.skipReason ? h('span', { style: Object.assign({}, styles.metaItem, { color: C.warnLabel }) }, reasonText(t, row.skipReason)) : null)) ,
 				h('div', { style: styles.rowActions },
+					row.releasable === true ? h('button', {
+						type: 'button',
+						style: buttonStyle('ghost', false),
+						title: t('row.release.title'),
+						onClick: function () {
+							props.onRelease([row.id]);
+						},
+					}, t('row.release')) : null,
 					h('button', {
 						type: 'button',
 						style: buttonStyle('danger', row.deletable !== true),
@@ -1439,6 +1488,20 @@ window.__ModuleLoader__.load({
 				return rowsForIds(allRows, selectedIds);
 			}, [allRows, selectedIds]);
 
+			// The subset of the selection that is still in memory and can therefore be
+			// released. A selection made on another tab may contain rows that cannot.
+			var releasableSelected = useMemo(function () {
+				var out = [];
+				for (var index = 0; index < selectedIds.length; index += 1) {
+					for (var scan = 0; scan < allRows.length; scan += 1) {
+						if (allRows[scan].id !== selectedIds[index]) continue;
+						if (allRows[scan].releasable === true) out.push(selectedIds[index]);
+						break;
+					}
+				}
+				return out;
+			}, [allRows, selectedIds]);
+
 			function requestDelete(ids, rows) {
 				var provided = rows && rows.length > 0 ? rows : rowsForIds(allRows, ids);
 				var deletable = [];
@@ -1466,7 +1529,71 @@ window.__ModuleLoader__.load({
 				confirmBus.set({ seq: confirmSeq, ids: idsToDelete, rows: deletable });
 			}
 
-			function restoreRows(ids) {
+			/** The id of the session the main view currently holds, or '' when it is unknown. */
+		function openSessionId() {
+			var store = sessions && sessions.byId && typeof sessions.byId === 'object' ? sessions.byId : null;
+			if (store === null) return '';
+			var ids = Array.isArray(sessions.ids) && sessions.ids.length > 0 ? sessions.ids : Object.keys(store);
+			for (var index = 0; index < ids.length; index += 1) {
+				var summary = store[ids[index]];
+				if (summary && summary.retainedBy && toNumber(summary.retainedBy.mainView) > 0) return ids[index];
+			}
+			return '';
+		}
+
+		function releaseRows(ids) {
+			if (!ids || ids.length === 0) {
+				pushNotice('info', t('notice.nothingSelected'));
+				return;
+			}
+			if (host.busy === true) return;
+			var releasable = [];
+			var refused = 0;
+			for (var index = 0; index < visible.length; index += 1) {
+				if (ids.indexOf(visible[index].id) === -1) continue;
+				if (visible[index].releasable === true) releasable.push(visible[index].id);
+				else refused += 1;
+			}
+			if (refused > 0) pushNotice('warning', t('notice.skipped', { n: refused }));
+			if (releasable.length === 0) {
+				pushNotice('warning', t('notice.nothingReleasable'));
+				return;
+			}
+			hostBus.set(function (state) {
+				return merge(state, { busy: true });
+			});
+			releaseSessions(releasable, openSessionId()).then(function (result) {
+				hostBus.set(function (state) {
+					return merge(state, { busy: false });
+				});
+				if (result.ok !== true) {
+					// `release-disabled` and `sessions-unavailable` are configuration answers
+					// rather than per-row failures, so they get their own wording.
+					var reason = result.body && typeof result.body.error === 'string' && result.body.error !== ''
+						? result.body.error
+						: result.error;
+					pushNotice('error', t('notice.releaseFailed', { message: reason }));
+					return;
+				}
+				var body = result.body || {};
+				var done = Array.isArray(body.released) ? body.released.length : releasable.length;
+				if (Array.isArray(body.failedIds) && body.failedIds.length > 0) {
+					pushNotice('warning', t('notice.releasedPartly', { n: done, m: body.failedIds.length }));
+				} else {
+					pushNotice('success', t('notice.released', { n: done }));
+				}
+				// Nothing was deleted, so the rows stay; they just lose their live/running
+				// badges and their delete button enables. A re-read is the honest way.
+				safeRefreshHost();
+			}, function (error) {
+				hostBus.set(function (state) {
+					return merge(state, { busy: false });
+				});
+				pushNotice('error', t('notice.releaseFailed', { message: describeError(error) }));
+			});
+		}
+
+		function restoreRows(ids) {
 				if (!ids || ids.length === 0) {
 					pushNotice('info', t('notice.nothingSelected'));
 					return;
@@ -1564,6 +1691,7 @@ window.__ModuleLoader__.load({
 						onDelete: function (ids) {
 							requestDelete(ids, rowsForIds(allRows, ids));
 						},
+						onRelease: releaseRows,
 						onRestore: restoreRows,
 					});
 				}));
@@ -1645,6 +1773,15 @@ window.__ModuleLoader__.load({
 							restoreRows(selectedIds);
 						},
 					}, t('bulk.restore', { n: selectedIds.length })),
+					h('button', {
+					type: 'button',
+					style: buttonStyle('ghost', releasableSelected.length === 0),
+					disabled: releasableSelected.length === 0,
+					title: releasableSelected.length === 0 ? t('notice.nothingReleasable') : t('row.release.title'),
+					onClick: function () {
+					releaseRows(releasableSelected);
+					},
+					}, t('bulk.release', { n: releasableSelected.length })),
 					selectedIds.length === 0 ? null : h('button', {
 						type: 'button',
 						style: buttonStyle('ghost', false),

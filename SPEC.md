@@ -82,7 +82,7 @@ Both adapters call the **same** dispatcher:
 export async function dispatch(ctx, config, op, payload) -> { status: number, body: object }
 ```
 
-`op` values: `status`, `list`, `delete`, `restore`, `archive`.
+`op` values: `status`, `list`, `delete`, `release`, `restore`, `archive`.
 
 ### 4.1 `status` (GET or POST)
 
@@ -93,10 +93,11 @@ export async function dispatch(ctx, config, op, payload) -> { status: number, bo
   "capabilities": {
     "authenticatedRoute": true, "rawRoute": true, "workspaceRegistry": true,
     "projectionCache": true, "purgeProjectionCache": true, "purgeCacheLayout": "per-record" | "single-legacy" | "absent",
-    "liveDetection": true, "auditLog": true, "canDeleteLive": false
+    "liveDetection": true, "releaseLive": true, "canRelease": true, "auditLog": true,
+    "canDeleteLive": false
   },
-  "config": { "allowDeleteUnarchived": false, "allowDeleteLive": false, "dryRun": false,
-              "purgeProjectionCache": true, "maxBatch": 200 },
+  "config": { "allowDeleteUnarchived": false, "allowDeleteLive": false, "releaseLive": true,
+              "dryRun": false, "purgeProjectionCache": true, "maxBatch": 200 },
   "roots": { "home": "…", "persistence": "…", "storages": "…", "cache": "…", "audit": "…" },
   "counts": { "items": 7, "archived": 3, "bytes": 123456 }
 }
@@ -388,6 +389,12 @@ export async function readAuditTail(path, limit = 50) -> { lines: object[], erro
    because a still-attached Session can append to the log directory after it was removed.
    `releaseLive: false` keeps the legacy behaviour and records the warning
    `live session left in the in-memory store (releaseLive is off)`.
+8. `release` is a POST-only operation of its own (`status`, `list`, `delete`, `release`,
+   `restore`, `archive`): it performs steps 7.1–7.3 above and deletes nothing, which is how a
+   user unblocks a `live`/`running` row before deciding to delete it. It refuses the open
+   session with `reason: 'current'`, answers `403 release-disabled` when `releaseLive` is off and
+   `503 sessions-unavailable` when the composition has no `sessions` service. Its audit action
+   is `release`. `list` items carry `releasable` so the UI only offers it where it applies.
 7. `status.capabilities` gained `releaseLive`; `publicConfig` includes `releaseLive`.
 
 ## 8. Testing rules

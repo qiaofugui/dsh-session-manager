@@ -21,6 +21,7 @@
 - 浏览全部归档会话以及磁盘上的所有会话，显示每条的日志与缓存占用
 - **永久删除**归档会话：会话日志、投影缓存、归档集合、置顶状态、工作区登记，一次清完
 - 在面板里直接恢复（取消归档）或重新归档
+- **释放**仍在内存里的会话：停掉正在运行的回合、从 Host 的 store 摘掉，日志仍留在磁盘上，之后就能删除
 - 批量删除 / 批量恢复，弹窗列出全部 id 与总占用空间后才允许确认
 - 默认安全：当前会话、运行中会话、存活会话一律拒绝，需显式开启；保护名单永远优先
 - 审计日志记录每次删除、每个失败步骤与释放的字节数
@@ -285,7 +286,7 @@ cascadeRoots:
 | `allowDeleteArchived` | `true` | `false` 时归档会话被视为受保护（原因码 `protected`） |
 | `allowDeleteUnarchived` | `false` | 是否允许删除**未归档**的会话（面板「全部」标签页需要它） |
 | `allowDeleteLive` | `false` | 是否允许删除仍然存活（已打开/可挂起）的会话 |
-| `releaseLive` | `true` | 删存活会话前，**先释放内存里的会话对象**：停掉正在跑的回合（`workspace/session-stop`），再从 `SessionStore` 摘除。关掉它会留下孤儿对象，日志目录有可能被重新写出来 |
+| `releaseLive` | `true` | 删存活会话前**先释放内存里的会话对象**：停掉正在运行的回合（`workspace/session-stop`），再从 `SessionStore` 摘除。同时控制着「释放」按钮是否出现。关掉它会留下孤儿对象，日志目录有可能被重新写出来 |
 | `purgeProjectionCache` | `true` | 删除投影缓存记录（缓存可由日志重建，删除总是安全的） |
 | `pruneEmptyProjects` | `true` | 项目目录下最后一个会话被删后，删除空的 `--<project>--` 目录 |
 | `cascadeRoots` | `[]` | 额外按会话 id 清理的根目录，见 §5 |
@@ -316,16 +317,29 @@ cascadeRoots:
   `sec-fetch-site != cross-site`、`Origin` 与 `Host` 同源、`content-type: application/json`，
   以及自定义头 `x-dsh-session-manager: 1`（表单无法伪造自定义头），并对 `OPTIONS` 一律不返回 CORS
   头。请求体上限 512 KiB。
-- **写操作必须 POST**：`delete`/`restore`/`archive` 走 GET 一律 `405 use-post`。
-- **审计**：每次删除和每次残留清理都会追加一行 JSONL，失败步骤也记录在案。
+- **写操作必须 POST**：`delete`/`release`/`restore`/`archive` 走 GET 一律 `405 use-post`。
+- **审计**：每次删除、每次释放和每次残留清理都会追加一行 JSONL，失败步骤也记录在案。
 
 ---
 
 ## 7a. 释放仍在内存里的会话
 
-删文件只是删除的一半。DSH 里还打开着的会话，在 Host 的 `SessionStore` 中仍是活的 `Session`
-对象，它的 agent loop 仍可能往「已经不存在的日志目录」里追加事件——于是删除明明报成功，会话又
-被写回来了。所以开着 `allowDeleteLive` 时，插件**先释放**再删文件：
+### 按钮：先释放，再删除
+
+还在内存里的会话（`live` / `running`）默认删不掉。与其让用户卡在这里，面板在每一个「仍在内存中
+且不是当前会话」的行上给出 **释放** 按钮：
+
+1. 行上出现 `释放`（删除按钮仍是禁用的）。底部批量栏的 `释放选中 (n)` 对所选行做同样的事，
+   只统计真正可释放的行。
+2. 释放会停掉正在运行的回合，并把会话从 Host 的内存 store 里摘掉。**磁盘上什么都没动**——
+   日志和投影缓存原样留在原地。
+3. 面板重新拉取列表：这一行失去 `live`/`running` 徽标，因为此时它只是磁盘上一个归档会话，
+   `删除` 按钮随之可用。如果它本来没归档，打开 `allowDeleteUnarchived` 才能删。
+
+所以「这个运行中的会话必须干掉」的正常流程是 **释放 → 删除**，不需要改任何配置。当前会话永远不
+提供释放——那会把你正看着的界面所绑定的 Host 对象拆掉。
+
+### Host 实际做了什么
 
 1. **停止活动**。`workspaceRegistry.stopSessionActivity(id)`——就是 DSH 自己归档准入用的那条接缝。
    Agent 注册表按用户自己的方式取消当前回合（`agent.cancel({ kind: 'user' })`），任务注册表逐个
@@ -334,12 +348,13 @@ cascadeRoots:
 2. **从 store 摘除**。`sessions.liveEntryFor(session).detach()`——`SessionStore` 公开的释放入口：
    把条目从 store 里删掉，并发出一条配对的 `session/disposed`。创建它的 fiber 之后再来调用自己的
    disposer 会变成空操作，所以重复释放是安全的。
-3. **校验**。此时 `sessions.get(id)` 必须是 `undefined`。如果 detach 之后仍在 store 里，这次删除
+3. **校验**。此时 `sessions.get(id)` 必须是 `undefined`。如果 detach 之后仍在 store 里，这次操作
    报失败，而不是留下一个能把日志写回来的孤儿。
 
-这三步之后才动文件。每一步都单独兜错，所以缺 `sessions` 服务、或没有任何 stop 监听时，会降级成
-显式失败（`failed.stop` / `failed.release`），而不是抛异常。把 `releaseLive` 设成 `false` 可以回到
-旧行为：文件删掉、内存对象留着，结果里带
+开了 `allowDeleteLive` 时，`delete` 内部会自动跑同样这三步——所以删除一个存活会话不可能留下一个
+还在往「已删除目录」里追加事件的旧对象。每一步都单独兜错，所以缺 `sessions` 服务、或没有任何 stop
+监听时，会降级成显式失败（`failed.stop` / `failed.release`），而不是抛异常。把 `releaseLive` 设成
+`false` 会同时关掉自动释放和这个手动按钮，结果里带
 `live session left in the in-memory store (releaseLive is off)` 这条警告。
 
 残留清理阶段同样会跑一次释放，所以部分失败后的重试也会把内存对象一并收掉。
@@ -371,7 +386,7 @@ dsh-session-manager/
 │  ├─ plan.js          # 纯策略：原因码与优先级
 │  ├─ delete.js        # 删除流水线：先释放内存中的会话，再文件 → 登记 → 事件 → 审计
 │  ├─ audit.js         # JSONL 审计
-│  ├─ ops.js           # 唯一的操作分发器（status/list/delete/restore/archive）
+│  ├─ ops.js           # 唯一的操作分发器（status/list/delete/release/restore/archive）
 │  └─ routes.js        # 两条 HTTP 适配器 + 回落路由的围栏
 ├─ locale/             # 客户端字典（zh/en），client.js 内还有一份内置副本
 ├─ tools/
@@ -379,8 +394,8 @@ dsh-session-manager/
 │  └─ probe-live.mjs       # 只读探测真实 $DSH_HOME，预览删除计划
 └─ test/
    ├─ host-core.test.mjs   # 29 项
-   ├─ client.test.mjs      # 浏览器 bundle 的注册与降级
-   ├─ integration.test.mjs # 31 项：假 ctx + 合成 DSH home + 真实请求/响应
+   ├─ client.test.mjs      # 浏览器 bundle 的注册、降级、字典与释放链路
+   ├─ integration.test.mjs # 44 项：假 ctx + 合成 DSH home + 真实请求/响应
    └─ run.mjs              # 一次跑全部
 ```
 

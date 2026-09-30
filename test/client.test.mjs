@@ -482,6 +482,25 @@ test('the bundle stays inside the hand-written browser contract', () => {
 	assert.match(SOURCE, /var\(--dsw-alias-/);
 });
 
+test('the release action is wired end to end in the bundle', () => {
+	// The request carries the open session id, because the Host refuses to release it.
+	assert.match(SOURCE, /async function releaseSessions\(ids, currentSessionId\)/);
+	assert.match(SOURCE, /callHost\('release', \{/);
+	assert.match(SOURCE, /currentSessionId: typeof currentSessionId === 'string' \? currentSessionId : ''/);
+
+	// The row offers it only where the Host said it applies.
+	assert.match(SOURCE, /row\.releasable === true \? h\('button'/);
+	assert.match(SOURCE, /onRelease: releaseRows/);
+	assert.match(SOURCE, /releasable: releasable,/);
+	assert.match(SOURCE, /releasable = \(live \|\| running\) && !current/);
+	assert.match(SOURCE, /t\('bulk\.release'/);
+
+	// The handler re-reads the list instead of dropping rows, since nothing was deleted.
+	assert.match(SOURCE, /t\('notice\.released', \{ n: done \}\)/);
+	assert.match(SOURCE, /t\('notice\.releasedPartly', \{ n: done, m: body\.failedIds\.length \}\)/);
+	assert.match(SOURCE, /t\('notice\.releaseFailed', \{ message: reason \}\)/);
+});
+
 test('locale JSON metadata files parse and carry meta.title/description', () => {
 	for (const name of ['en', 'zh']) {
 		const raw = readFileSync(join(HERE, '..', 'locale', `${name}.json`), 'utf8');

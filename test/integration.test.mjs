@@ -525,6 +525,98 @@ test('residue cleanup also releases a session left in memory', async (t) => {
   assert.equal(body.skipped.some((entry) => entry.id === GONE), false, 'residue must not stay skipped');
 });
 
+test('release frees a live session from memory without deleting anything', async (t) => {
+  const fx = await fixture();
+  t.after(fx.cleanup);
+  const h = fakeCtx({ root: fx.persistence, archived: [A], live: [A], running: [A] });
+  const config = normalizeConfig({}).value;
+  const { status, body } = await dispatch(h.ctx, config, 'release', { ids: [A] });
+
+  assert.equal(status, 200);
+  assert.deepEqual(body.released, [A]);
+  assert.equal(body.results[0].removed.stopped, true);
+  assert.equal(body.results[0].removed.detached, true);
+  assert.deepEqual(h.stoppedSessions, [A]);
+  assert.equal(h.services.get('sessions').get(A), undefined, 'the store must no longer hold it');
+  // Nothing on disk was touched: this is the whole point of the operation.
+  assert.equal(existsSync(fx.sessions[A]), true);
+  assert.equal(existsSync(path.join(fx.cache, `${A}.json`)), true);
+  assert.deepEqual(h.archived, [A], 'the archive set is untouched');
+});
+
+test('release then delete is the documented way to remove a live session', async (t) => {
+  const fx = await fixture();
+  t.after(fx.cleanup);
+  const h = fakeCtx({ root: fx.persistence, archived: [A], live: [A] });
+  const config = normalizeConfig({}).value;
+
+  // First: delete is refused while the session is still in memory.
+  const refused = await dispatch(h.ctx, config, 'delete', { ids: [A] });
+  assert.deepEqual(refused.body.deleted, []);
+  assert.deepEqual(refused.body.skipped, [{ id: A, reason: 'live' }]);
+  assert.equal(existsSync(fx.sessions[A]), true);
+
+  // Then: release it, and the same delete succeeds without any extra opt-in.
+  const released = await dispatch(h.ctx, config, 'release', { ids: [A] });
+  assert.deepEqual(released.body.released, [A]);
+
+  const deleted = await dispatch(h.ctx, config, 'delete', { ids: [A] });
+  assert.deepEqual(deleted.body.deleted, [A]);
+  assert.equal(deleted.body.skipped.some((entry) => entry.id === A), false);
+  assert.equal(existsSync(fx.sessions[A]), false);
+  assert.equal(h.services.get('sessions').get(A), undefined);
+});
+
+test('release refuses the current session and reports not-live as a no-op', async (t) => {
+  const fx = await fixture();
+  t.after(fx.cleanup);
+  const h = fakeCtx({ root: fx.persistence, archived: [A, B], live: [A] });
+  const config = normalizeConfig({}).value;
+  const { body } = await dispatch(h.ctx, config, 'release', { ids: [A, B, '../etc'], currentSessionId: A });
+  assert.equal(body.released.includes(A), false, 'the open session must not be releasable');
+  const reasons = new Map(body.skipped.map((entry) => [entry.id, entry.reason]));
+  assert.equal(reasons.get(A), 'current');
+  assert.equal(reasons.get('../etc'), 'invalid-id');
+  // B is not live: releasing it is a successful no-op, not an error.
+  assert.deepEqual(body.released, [B]);
+  assert.equal(body.results[0].removed.release, 'not-live');
+});
+
+test('release is refused when releaseLive is off or the store is missing', async (t) => {
+  const fx = await fixture();
+  t.after(fx.cleanup);
+  const h = fakeCtx({ root: fx.persistence, archived: [A], live: [A] });
+
+  const off = await dispatch(h.ctx, normalizeConfig({ releaseLive: false }).value, 'release', { ids: [A] });
+  assert.equal(off.status, 403);
+  assert.equal(off.body.error, 'release-disabled');
+  assert.equal(h.services.get('sessions').get(A) !== undefined, true);
+
+  const noStore = fakeCtx({ root: fx.persistence, archived: [A], withSessions: false });
+  const missing = await dispatch(noStore.ctx, normalizeConfig({}).value, 'release', { ids: [A] });
+  assert.equal(missing.status, 503);
+  assert.equal(missing.body.error, 'sessions-unavailable');
+});
+
+test('list marks the rows that can be released', async (t) => {
+  const fx = await fixture();
+  t.after(fx.cleanup);
+  const h = fakeCtx({ root: fx.persistence, archived: [A, B], live: [A], running: [D] });
+  const config = normalizeConfig({}).value;
+  const { body } = await dispatch(h.ctx, config, 'list', { currentSessionId: B });
+  const rows = new Map(body.items.map((item) => [item.id, item]));
+  assert.equal(rows.get(A).releasable, true, 'a live, non-open row is releasable');
+  assert.equal(rows.get(A).live, true);
+  assert.equal(rows.get(A).deletable, false);
+  assert.equal(rows.get(A).skipReason, 'live');
+  // B is the open session: it is neither releasable nor deletable.
+  assert.equal(rows.get(B).releasable, false);
+  assert.equal(rows.get(B).current, true);
+  // D runs and is not archived, so both are offered.
+  assert.equal(rows.get(D).releasable, true);
+  assert.equal(rows.get(D).running, true);
+});
+
 test('delete refuses ids that escape the persistence root', async (t) => {
   const fx = await fixture();
   t.after(fx.cleanup);

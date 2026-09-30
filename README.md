@@ -24,6 +24,8 @@ cache and its workspace/archive accounting, and writes an audit entry.*
 - **Permanently delete** an archived session — session log, derived projection cache, archive
   membership, pin state and workspace accounting, all in one operation
 - Restore (un-archive) and re-archive a session without leaving the panel
+- **Release** a session that is still in memory — stop the running turn and drop it from the Host's
+  store while keeping the log on disk, so the delete becomes available
 - Bulk delete / bulk restore with a confirmation dialog that lists every id and the total size
 - Safety by default: the current session, running sessions and live sessions are refused unless you
   opt in; an explicit protection list always wins
@@ -311,7 +313,7 @@ Set it in the profile's `cordis.patch.yml`. An override targeting the same `id` 
 | `allowDeleteArchived` | `true` | `false` treats archived sessions as protected (`protected`) |
 | `allowDeleteUnarchived` | `false` | allow deleting **non-archived** sessions (needed by the `全部` tab) |
 | `allowDeleteLive` | `false` | allow deleting a session that is still live |
-| `releaseLive` | `true` | before deleting a live session, **free the in-memory session object**: stop the running turn (`workspace/session-stop`) and detach it from `SessionStore`. Turning this off leaves an orphan object that can rewrite the log directory |
+| `releaseLive` | `true` | before deleting a live session, **free the in-memory session object**: stop the running turn (`workspace/session-stop`) and detach it from `SessionStore`. Also enables the explicit 释放 / Release action. Turning this off leaves an orphan object that can rewrite the log directory |
 | `purgeProjectionCache` | `true` | remove the derived projection-cache record (it regenerates from the log) |
 | `pruneEmptyProjects` | `true` | delete an empty `--<project>--` directory after its last session goes |
 | `cascadeRoots` | `[]` | extra roots cleaned by session id, see §5 |
@@ -345,17 +347,33 @@ defaults and logs a warning.
   requires a loopback peer, `sec-fetch-site != cross-site`, `Origin` host equal to `Host`,
   `content-type: application/json`, and the custom header `x-dsh-session-manager: 1` (a form post
   cannot set a custom header). `OPTIONS` never receives CORS headers. Bodies are capped at 512 KiB.
-- **Mutations must be POST**: `delete`/`restore`/`archive` over GET answer `405 use-post`.
-- **Audit**: every delete and every residue cleanup appends one JSONL line, failures included.
+- **Mutations must be POST**: `delete`/`release`/`restore`/`archive` over GET answer `405 use-post`.
+- **Audit**: every delete, every release and every residue cleanup appends one JSONL line, failures
+  included.
 
 ---
 
 ## 7a. Releasing a session that is still in memory
 
-Deleting the files is only half of a delete. A session that DSH still has open lives on in the
-Host's `SessionStore` as a `Session` object, and its agent loop can still append to a log directory
-that no longer exists — which writes the session back into existence after the delete reported
-success. So when `allowDeleteLive` is on, the plugin releases the session **first**:
+### The button: release first, delete afterwards
+
+A session that DSH still has open cannot be deleted — that is the `live` / `running` refusal. Rather
+than leaving that as a dead end, the panel offers a **释放 / Release** action on every row that is
+still held in memory (and is not the session you are looking at):
+
+1. The row shows `释放` instead of only a disabled `删除`. In the bottom bar, `释放选中 (n)` does the
+   same for the selection, and only counts the rows that are actually releasable.
+2. Release stops the running turn and drops the session from the Host's in-memory store. **Nothing on
+   disk is touched** — the log and the projection cache stay exactly where they were.
+3. The panel re-reads the list. The row loses its `live`/`running` badges and, because it is now
+   merely an archived session on disk, its `删除` button enables. If it was not archived, turn on
+   `allowDeleteUnarchived` to delete it.
+
+So the normal flow for "this running session has to go" is **释放 → 删除**, with no configuration
+change at all. The current session is never offered for release: tearing down the Host object your
+own view is bound to would break the UI you are using.
+
+### What the Host actually does
 
 1. **Stop the activity.** `workspaceRegistry.stopSessionActivity(id)` — the same seam DSH's own
    archive admission uses. The Agent registry cancels the running turn the way the user would
@@ -366,12 +384,13 @@ success. So when `allowDeleteLive` is on, the plugin releases the session **firs
    release: it removes the entry from the store and emits the paired `session/disposed`. The owning
    fiber's disposer becomes a no-op afterwards, so a double release is safe.
 3. **Verify.** `sessions.get(id)` must now be `undefined`. If the session is still live after the
-   detach, the delete is reported as failed rather than leaving an orphan that can resurrect the log.
+   detach, the operation is reported as failed rather than leaving an orphan that can resurrect the log.
 
-Only after that does the plugin delete the files. Every step is separately guarded, so a composition
-without a `sessions` service, or without a stop listener, degrades into a reported failure
-(`failed.stop` / `failed.release`) instead of a throw. Set `releaseLive: false` to keep the legacy
-behaviour — the session files go, the in-memory object stays, and the result carries the warning
+The same three steps run automatically inside `delete` when `allowDeleteLive` is on, so a delete of a
+live session can never leave a stale object appending into a directory that has already been removed.
+Every step is separately guarded, so a composition without a `sessions` service, or without a stop
+listener, degrades into a reported failure (`failed.stop` / `failed.release`) instead of a throw. Set
+`releaseLive: false` to disable both spellings; the result then carries the warning
 `live session left in the in-memory store (releaseLive is off)`.
 
 The same release runs during residue cleanup, so a retry after a partial failure also frees the
@@ -405,7 +424,7 @@ dsh-session-manager/
 │  ├─ plan.js          # pure policy: reason codes and precedence
 │  ├─ delete.js        # delete pipeline: release memory → files → accounting → event → audit
 │  ├─ audit.js         # JSONL audit log
-│  ├─ ops.js           # the single operation dispatcher (status/list/delete/restore/archive)
+│  ├─ ops.js           # the single operation dispatcher (status/list/delete/release/restore/archive)
 │  └─ routes.js        # the two HTTP adapters and the fallback route's fence
 ├─ locale/             # client dictionaries (zh/en), mirrored inline in client.js
 ├─ tools/
@@ -413,8 +432,8 @@ dsh-session-manager/
 │  └─ probe-live.mjs       # read-only probe of the real $DSH_HOME, delete preview
 └─ test/
    ├─ host-core.test.mjs   # 29 tests
-   ├─ client.test.mjs      # browser-bundle registrations and degradation
-   ├─ integration.test.mjs # 31 tests: fake ctx + synthetic DSH home + real requests
+   ├─ client.test.mjs      # registrations, degradation, dictionaries, release wiring
+   ├─ integration.test.mjs # 44 tests: fake ctx + synthetic DSH home + real requests
    └─ run.mjs              # runs everything in one process
 ```
 
