@@ -14,6 +14,17 @@ cache, and its workspace/archive accounting, and it is recorded in an audit log.
 
 ---
 
+## 0. Quick install
+
+```
+dsh plugin add https://github.com/qiaofugui/dsh-session-manager
+```
+
+Or, in the Web UI: sidebar **插件** → **添加插件** → paste the same address.
+Full details in [§ 3 Install](#3-install).
+
+---
+
 ## 1. What it adds
 
 | Surface | Where | What it does |
@@ -115,43 +126,55 @@ above.
 
 ## 3. Install
 
-### Option A — as a profile dependency (recommended, easiest)
+## 3. Install
 
-Add one dependency to the manifest at `$DSH_HOME\profiles\<your profile>\package.json`
-(`desktop` by default):
+### Paste the GitHub address into the Plugins page (recommended)
 
-```json
-{
-  "dependencies": {
-    "dsh-session-manager": "https://codeload.github.com/qiaofugui/dsh-session-manager/tar.gz/refs/heads/main"
-  }
-}
+In the DSH sidebar open **插件 (Plugins)** → **添加插件 (Add plugin)** and enter:
+
+```
+https://github.com/qiaofugui/dsh-session-manager
 ```
 
-Then let an agent session call:
+**Add plugin** accepts a package name, a **Git address**, a tarball, or an absolute local path — so
+the repository URL alone is enough. Then click **立即启用 (Enable now)** and refresh the browser page;
+the `会话管理` sidebar icon appears.
+
+> A newer release cannot be auto-updated: uninstall first, then install again.
+> A package without a bundle patch is refused before install; this repo ships `cordis.patch.yml`, so
+> it passes.
+
+### Command line
+
+```
+dsh plugin add https://github.com/qiaofugui/dsh-session-manager
+```
+
+Pin a tag or commit (the default branch is used without `#`):
+
+```
+dsh plugin add https://github.com/qiaofugui/dsh-session-manager#v1.0.0
+```
+
+### Agent tool call
+
+From a DSH session, let an agent call `plugin_manager`:
 
 ```
 action: install_bundle
-target: dsh-session-manager
+target: https://github.com/qiaofugui/dsh-session-manager
 ```
 
-`install_bundle` installs the dependency, appends the bundle to the profile's
-`dsh.profile.bundles`, and hot-loads. Its `application` field reports whether it is live
-(`applied`) or needs a restart (`restart-required`).
+### Local development install
 
-> With the GitHub archive URL you install the published release; point it at a tag or commit if you
-> want to follow a specific revision.
-
-### Option B — local development install
-
-With the source on a local directory, install it directly by absolute path:
+With the source in a local directory, install by absolute path (no GitHub network needed):
 
 ```
 action: install_bundle
 target: E:\test\dsh-session-manager
 ```
 
-Or use the repo's equivalent script (no `plugin_manager` needed, idempotent, backs the manifest up):
+Or equivalently run the bundled script (idempotent, backs the profile's `package.json` up):
 
 ```powershell
 & "$env:DSH_HOME\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe" `
@@ -162,33 +185,11 @@ Or use the repo's equivalent script (no `plugin_manager` needed, idempotent, bac
 & "...node.exe" "...\tools\install-profile.mjs" --uninstall
 ```
 
-### Option C — manual
+### Uninstall
 
-<details>
-<summary>Expand</summary>
-
-1. Copy the directory into the profile:
-
-   ```powershell
-   Copy-Item E:\test\dsh-session-manager `
-     "$env:DSH_HOME\profiles\desktop\node_modules\dsh-session-manager" -Recurse -Force
-   ```
-
-2. Teach the profile about the bundle in `$DSH_HOME\profiles\desktop\package.json`:
-
-   ```json
-   {
-     "dependencies": { "dsh-session-manager": "file:./node_modules/dsh-session-manager" },
-     "dsh": { "profile": { "bundles": [ "...", "dsh-session-manager" ] } }
-   }
-   ```
-
-   The `bundles` entry is what makes the plugin's `cordis.patch.yml` an active layer. The
-   `dependencies` entry keeps DSH's reconciliation from dropping it on a later install/upgrade.
-
-3. Restart DSH, or let hot-load take over (a new bundle often hot-loads).
-
-</details>
+Use the bundle's uninstall control on the Plugins page (it asks for confirmation), or call
+`remove_bundle` with `target: dsh-session-manager`. The plugin leaves no global state; the audit log
+lives in `$DSH_HOME\session-manager\` and can be deleted by hand.
 
 ### Verifying the install
 
@@ -196,7 +197,7 @@ Or use the repo's equivalent script (no `plugin_manager` needed, idempotent, bac
 Invoke-RestMethod "http://127.0.0.1:19387/session-manager/api?op=status"
 ```
 
-`ok: true` proves the Host half is mounted; then **refresh the browser page** for the sidebar icon.
+`ok: true` proves the Host half is mounted.
 
 > That route is a loopback-only diagnostic: it accepts connections from this machine, requires the
 > `Origin` host to equal `Host`, and every `POST` needs `x-dsh-session-manager: 1` plus
@@ -205,15 +206,10 @@ Invoke-RestMethod "http://127.0.0.1:19387/session-manager/api?op=status"
 
 ### Upgrade
 
-Replace the files under `node_modules\dsh-session-manager` and restart. **Replacing** an installed
-package cannot hot-load a fresh JavaScript generation, so the browser keeps the old `client.js` until
-the restart.
-
-### Uninstall
-
-Remove `dsh-session-manager` from `dsh.profile.bundles` (and from `dependencies`), delete
-`node_modules\dsh-session-manager`, and restart. The plugin leaves no global state; the audit log lives
-in `$DSH_HOME\session-manager\` and can be deleted by hand.
+DSH has no auto-update for plugins: **uninstall, then install the new version again**. From local
+sources, replacing the files under `node_modules\dsh-session-manager` needs a restart — an already
+installed package cannot hot-load a fresh JavaScript generation, so the browser keeps the old
+`client.js` until then.
 
 ---
 

@@ -13,6 +13,17 @@
 
 ---
 
+## 0. 快速安装
+
+```
+dsh plugin add https://github.com/qiaofugui/dsh-session-manager
+```
+
+或在 Web UI 里：侧栏 **插件** → **添加插件** → 粘贴同一个地址。
+更多细节见 [§ 3 安装](#3-安装)。
+
+---
+
 ## 1. 它能做什么
 
 | 入口 | 位置 | 作用 |
@@ -111,79 +122,65 @@ $DSH_HOME/session-manager/deleted.jsonl
 
 ## 3. 安装
 
-三种方式，从省事到手动排列。安装是**幂等**的，重复执行没有副作用。
+### 在插件页填 GitHub 地址（推荐）
 
-### 方式 A：装成本地依赖（推荐，最省事）
+在 DSH 侧栏打开 **插件** 页 → **添加插件**，输入：
 
-编辑 `$DSH_HOME\profiles\<你的 profile>\package.json`（默认 `desktop`），加一条依赖：
-
-```json
-{
-  "dependencies": {
-    "dsh-session-manager": "https://codeload.github.com/qiaofugui/dsh-session-manager/tar.gz/refs/heads/main"
-  }
-}
+```
+https://github.com/qiaofugui/dsh-session-manager
 ```
 
-然后在 DSH 里让 agent 调用：
+「添加插件」接受包名、**Git 地址**、压缩包或本地绝对路径，所以直接贴仓库地址即可。
+装完点 **立即启用**，然后刷新浏览器页面，侧栏就会出现 `会话管理` 图标。
+
+> 装完**不支持自动更新**：升级要先卸载再装新版。
+> 不带 bundle patch 的包会在安装前被拒绝；本仓库有 `cordis.patch.yml`，可以直接过。
+
+### 命令行
+
+```
+dsh plugin add https://github.com/qiaofugui/dsh-session-manager
+```
+
+或者指定某个 tag / commit（不加 `#` 时默认 `main`）：
+
+```
+dsh plugin add https://github.com/qiaofugui/dsh-session-manager#v1.0.0
+```
+
+### Agent 调用
+
+在 DSH 会话里让 agent 调用 `plugin_manager`：
 
 ```
 action: install_bundle
-target: dsh-session-manager
+target: https://github.com/qiaofugui/dsh-session-manager
 ```
 
-`install_bundle` 会自己装依赖、把 bundle 追加进 profile 的 `dsh.profile.bundles`、并热加载。返回的
-`application` 字段说明是否已生效（`applied` = 已生效，`restart-required` = 需重启）。
+### 本地开发安装
 
-> 用 GitHub 归档地址时，装的是「发布版」；想跟随仓库最新代码请改成具体的 tag 或 commit。
-
-### 方式 B：本地开发安装
-
-源码在本地目录时，用绝对目录直接装：
+源码在本地目录时，用绝对路径装（不需要 GitHub 网络）：
 
 ```
 action: install_bundle
 target: E:\test\dsh-session-manager
 ```
 
-或者用仓库自带的等价脚本（不依赖 `plugin_manager`，幂等，会自动备份 manifest）：
+或等价地跑仓库自带脚本（幂等，会自动备份 profile 的 `package.json`）：
 
 ```powershell
 & "$env:DSH_HOME\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe" `
   E:\test\dsh-session-manager\tools\install-profile.mjs
-# 预览而不写入
+# 只预览，不写入
 & "...node.exe" "...\tools\install-profile.mjs" --dry-run
 # 撤销 bundle 登记并删除复制目录
 & "...node.exe" "...\tools\install-profile.mjs" --uninstall
 ```
 
-### 方式 C：手动安装
+### 卸载
 
-<details>
-<summary>展开</summary>
-
-1. 把整个目录复制到 profile：
-
-   ```powershell
-   Copy-Item E:\test\dsh-session-manager `
-     "$env:DSH_HOME\profiles\desktop\node_modules\dsh-session-manager" -Recurse -Force
-   ```
-
-2. 在 `$DSH_HOME\profiles\desktop\package.json` 里让 profile 认识这个 bundle：
-
-   ```json
-   {
-     "dependencies": { "dsh-session-manager": "file:./node_modules/dsh-session-manager" },
-     "dsh": { "profile": { "bundles": [ "...", "dsh-session-manager" ] } }
-   }
-   ```
-
-   `bundles` 里追加一项，插件的 `cordis.patch.yml` 才会作为一层 patch 生效；
-   `dependencies` 里加一项是为了让 DSH 的 reconcile 逻辑在后续升级/安装操作后不会把它摘掉。
-
-3. 重启 DSH，或等热加载接管（新 bundle 常能热加载，见下）。
-
-</details>
+在**插件**页里对该组合包点卸载（会要求确认）；或 Agent 调用 `remove_bundle`，`target` 填
+`dsh-session-manager`。插件不残留全局状态；审计日志在 `$DSH_HOME\session-manager\`，按需删除。
 
 ### 装完怎么确认
 
@@ -191,22 +188,11 @@ target: E:\test\dsh-session-manager
 Invoke-RestMethod "http://127.0.0.1:19387/session-manager/api?op=status"
 ```
 
-返回 `ok: true` 就说明 Host 半边已挂载；随后**刷新浏览器页面**即可看到侧栏的 `会话管理` 图标。
+返回 `ok: true` 就说明 Host 半边已挂载。
 
 > 该路由是回环专用的诊断入口：只接受本机连接、要求 `Origin` 与 `Host` 同源，且 `POST` 必须带
 > `x-dsh-session-manager: 1` 头和 `application/json`。不带浏览器 Cookie 访问 `/api/session-manager`
 > 会得到 `401`，这是正常的——浏览器里的面板会自动带上 Cookie。
-
-### 升级
-
-替换 `node_modules\dsh-session-manager` 下的文件后刷新或重启。**替换**已安装包时无法只靠热加载
-加载新的 `client.js` 代码代，浏览器里旧的 bundle 会一直用到重启为止。
-
-### 卸载
-
-从 `dsh.profile.bundles` 里删掉 `dsh-session-manager`（和 `dependencies` 里的那一项），
-再删掉 `node_modules\dsh-session-manager`，重启。插件不残留任何全局状态；审计日志在
-`$DSH_HOME\session-manager\`，按需删除。
 
 ---
 
