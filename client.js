@@ -98,7 +98,8 @@ window.__ModuleLoader__.load({
 			'row.delete': '删除',
 			'row.restore': '恢复',
 			'row.release': '释放',
-			'row.release.title': '从内存中释放此会话：停止正在运行的回合，日志保留在磁盘上。释放后即可删除。',			'bulk.selected': '已选 {n} 项',
+			'row.release.title': '从内存中释放此会话：停止正在运行的回合，日志保留在磁盘上。释放后即可删除。',
+			'bulk.selected': '已选 {n} 项',
 			'bulk.selectAll': '全选',
 			'bulk.clear': '取消选择',
 			'bulk.delete': '删除选中 ({n})',
@@ -313,8 +314,32 @@ window.__ModuleLoader__.load({
 			return interpolate(template, params);
 		}
 
+		/**
+		 * Wrap a host-provided `t` seat so an unresolved key can never surface as
+		 * raw text.
+		 *
+		 * Slot props hand every plugin the host's `t`, and a host that answers a
+		 * lookup it does not know by echoing the key back would otherwise print
+		 * `notice.releaseFailed` straight into the UI. An answer equal to the key
+		 * asked for counts as a miss, the inline dictionary wins, and a throwing
+		 * seat degrades to the same fallback instead of breaking the component.
+		 */
+		function guardT(t) {
+			if (typeof t !== 'function') return fallbackTranslate;
+			return function (key, params) {
+				var value;
+				try {
+					value = t(key, params);
+				} catch (error) {
+					value = null;
+				}
+				if (typeof value === 'string' && value !== '' && value !== key) return value;
+				return fallbackTranslate(key, params);
+			};
+		}
+
 		function pickT(props) {
-			if (props && typeof props.t === 'function') return props.t;
+			if (props && typeof props.t === 'function') return guardT(props.t);
 			return fallbackTranslate;
 		}
 
@@ -2155,6 +2180,16 @@ window.__ModuleLoader__.load({
 		 * locale service, otherwise fall back to the inline dictionaries so a
 		 * label is never empty and nothing throws.
 		 */
+		/**
+		 * Build the `t` seat used by registration-time label thunks: prefer the
+		 * locale service, otherwise fall back to the inline dictionaries so a
+		 * label is never empty and nothing throws.
+		 *
+		 * A locale service that answers a lookup it does not know by echoing the
+		 * key back is common, and trusting that answer would print the raw key
+		 * (`notice.releaseFailed`) in the UI. An answer equal to the key asked
+		 * for is therefore treated as a miss and the inline dictionary wins.
+		 */
 		function makeTranslate(ctx) {
 			var locale = ctx && ctx.locale ? ctx.locale : null;
 			if (locale && typeof locale.bind === 'function') {
@@ -2162,8 +2197,14 @@ window.__ModuleLoader__.load({
 					var bound = locale.bind(NS);
 					if (typeof bound === 'function') {
 						return function (key, params) {
-							var value = bound(key, params);
-							return typeof value === 'string' && value !== '' ? value : fallbackTranslate(key, params);
+							var value;
+							try {
+								value = bound(key, params);
+							} catch (error) {
+								value = null;
+							}
+							if (typeof value === 'string' && value !== '' && value !== key) return value;
+							return fallbackTranslate(key, params);
 						};
 					}
 				} catch (error) {
@@ -2175,7 +2216,7 @@ window.__ModuleLoader__.load({
 
 		function apply(ctx) {
 			var safeCtx = ctx && typeof ctx === 'object' ? ctx : {};
-			var t = makeTranslate(safeCtx);
+			var t = guardT(makeTranslate(safeCtx));
 			var slots = safeCtx.slots && typeof safeCtx.slots === 'object' ? safeCtx.slots : null;
 
 			var registrations = [

@@ -501,6 +501,47 @@ test('the release action is wired end to end in the bundle', () => {
 	assert.match(SOURCE, /t\('notice\.releaseFailed', \{ message: reason \}\)/);
 });
 
+test('a host t that echoes unknown keys never leaks a raw key into the UI', () => {
+	// Both seats must be guarded: the one `apply` builds from ctx.locale, and the
+	// one the slot injects as the `t` prop.
+	assert.match(SOURCE, /function guardT\(t\) \{/);
+	assert.match(SOURCE, /if \(typeof t !== 'function'\) return fallbackTranslate;/);
+	assert.match(SOURCE, /value !== key/);
+	assert.match(SOURCE, /if \(props && typeof props\.t === 'function'\) return guardT\(props\.t\);/);
+	assert.match(SOURCE, /var t = guardT\(makeTranslate\(safeCtx\)\);/);
+
+	const { returned } = loadFactory();
+	const { ctx, state } = createFakeContext({ locale: true, ctxOn: false });
+	returned.apply(ctx);
+
+	// A seat that answers an unknown key with the key itself. This is what a
+	// locale service does when it has no entry, and trusting it would print the
+	// raw key in the UI.
+	const echoingT = (key) => key;
+
+	// The slot-injected seat is guarded: passing it in must not leak the key.
+	const page = state.registrations.find((entry) => entry.options.name === 'main');
+	const tree = page.component({ t: echoingT });
+	const serialized = JSON.stringify(tree);
+	const leaked = [...serialized.matchAll(/"([a-z][a-z0-9-]*(?:\.[a-zA-Z0-9-]+)+)"/g)]
+		.map((match) => match[1])
+		.filter((candidate) => !candidate.includes('/') && !candidate.includes('\\'));
+	assert.deepEqual(leaked, [], `raw keys reached the DOM: ${leaked.join(', ')}`);
+	assert.ok(serialized.includes('删除'), 'the guarded seat must still resolve real text');
+
+	// The seat `apply` builds for its own label thunks is guarded too, so a
+	// repointing ctx.locale cannot break them either.
+	const repointed = createFakeContext({ locale: true, ctxOn: false });
+	repointed.ctx.locale = { bind: () => echoingT };
+	assert.doesNotThrow(() => loadFactory().returned.apply(repointed.ctx));
+	for (const entry of repointed.state.registrations) {
+		if (entry.labelled !== true) continue;
+		const label = entry.options.label();
+		assert.equal(typeof label, 'string');
+		assert.ok(!label.includes('.'), `label thunk leaked a raw key: ${label}`);
+	}
+});
+
 test('locale JSON metadata files parse and carry meta.title/description', () => {
 	for (const name of ['en', 'zh']) {
 		const raw = readFileSync(join(HERE, '..', 'locale', `${name}.json`), 'utf8');
