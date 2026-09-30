@@ -310,7 +310,8 @@ Set it in the profile's `cordis.patch.yml`. An override targeting the same `id` 
 | `enabled` | `true` | master switch; `false` registers nothing |
 | `allowDeleteArchived` | `true` | `false` treats archived sessions as protected (`protected`) |
 | `allowDeleteUnarchived` | `false` | allow deleting **non-archived** sessions (needed by the `全部` tab) |
-| `allowDeleteLive` | `false` | allow deleting a session that is still live; a page reload is then needed to drop the stale in-memory object |
+| `allowDeleteLive` | `false` | allow deleting a session that is still live |
+| `releaseLive` | `true` | before deleting a live session, **free the in-memory session object**: stop the running turn (`workspace/session-stop`) and detach it from `SessionStore`. Turning this off leaves an orphan object that can rewrite the log directory |
 | `purgeProjectionCache` | `true` | remove the derived projection-cache record (it regenerates from the log) |
 | `pruneEmptyProjects` | `true` | delete an empty `--<project>--` directory after its last session goes |
 | `cascadeRoots` | `[]` | extra roots cleaned by session id, see §5 |
@@ -349,15 +350,44 @@ defaults and logs a warning.
 
 ---
 
+## 7a. Releasing a session that is still in memory
+
+Deleting the files is only half of a delete. A session that DSH still has open lives on in the
+Host's `SessionStore` as a `Session` object, and its agent loop can still append to a log directory
+that no longer exists — which writes the session back into existence after the delete reported
+success. So when `allowDeleteLive` is on, the plugin releases the session **first**:
+
+1. **Stop the activity.** `workspaceRegistry.stopSessionActivity(id)` — the same seam DSH's own
+   archive admission uses. The Agent registry cancels the running turn the way the user would
+   (`agent.cancel({ kind: 'user' })`), and the job registry kills that session's tasks. The call is
+   awaited, so the turn's final events are written before anything is removed. Without the seam the
+   plugin falls back to `ctx.parallel('workspace/session-stop', { sessionId })`, then to `ctx.emit`.
+2. **Detach it from the store.** `sessions.liveEntryFor(session).detach()` — `SessionStore`'s public
+   release: it removes the entry from the store and emits the paired `session/disposed`. The owning
+   fiber's disposer becomes a no-op afterwards, so a double release is safe.
+3. **Verify.** `sessions.get(id)` must now be `undefined`. If the session is still live after the
+   detach, the delete is reported as failed rather than leaving an orphan that can resurrect the log.
+
+Only after that does the plugin delete the files. Every step is separately guarded, so a composition
+without a `sessions` service, or without a stop listener, degrades into a reported failure
+(`failed.stop` / `failed.release`) instead of a throw. Set `releaseLive: false` to keep the legacy
+behaviour — the session files go, the in-memory object stays, and the result carries the warning
+`live session left in the in-memory store (releaseLive is off)`.
+
+The same release runs during residue cleanup, so a retry after a partial failure also frees the
+object.
+
+---
+
 ## 8. Known limitations
 
-- Deleting a live session (`allowDeleteLive: true`) can leave a stale in-memory object in the page;
-  reload it.
 - Other plugins' session indexes are not cleaned (§2.6).
 - The legacy single-file projection-cache layout is left alone on purpose.
 - With `allowDeleteUnarchived: false`, no non-archived row in the `全部` tab is deletable — that is
   intentional.
 - There is no recycle bin: deletion is irreversible, with only the audit log as a trace.
+- `releaseLive` depends on `SessionStore` exposing `liveEntryFor()`; if DSH changes that API the
+  delete fails with `failed.release` instead of silently leaving an orphan session behind.
 
 ---
 
@@ -373,7 +403,7 @@ dsh-session-manager/
 │  ├─ encoder.js       # DSH path-segment codec, id validation
 │  ├─ scanner.js       # the only module that touches the filesystem
 │  ├─ plan.js          # pure policy: reason codes and precedence
-│  ├─ delete.js        # delete pipeline: files → accounting → event → audit
+│  ├─ delete.js        # delete pipeline: release memory → files → accounting → event → audit
 │  ├─ audit.js         # JSONL audit log
 │  ├─ ops.js           # the single operation dispatcher (status/list/delete/restore/archive)
 │  └─ routes.js        # the two HTTP adapters and the fallback route's fence

@@ -284,7 +284,8 @@ cascadeRoots:
 | `enabled` | `true` | 总开关；`false` 时该行不注册任何东西 |
 | `allowDeleteArchived` | `true` | `false` 时归档会话被视为受保护（原因码 `protected`） |
 | `allowDeleteUnarchived` | `false` | 是否允许删除**未归档**的会话（面板「全部」标签页需要它） |
-| `allowDeleteLive` | `false` | 是否允许删除仍然存活（已打开/可挂起）的会话；需要重载页面才能清掉内存里的旧对象 |
+| `allowDeleteLive` | `false` | 是否允许删除仍然存活（已打开/可挂起）的会话 |
+| `releaseLive` | `true` | 删存活会话前，**先释放内存里的会话对象**：停掉正在跑的回合（`workspace/session-stop`），再从 `SessionStore` 摘除。关掉它会留下孤儿对象，日志目录有可能被重新写出来 |
 | `purgeProjectionCache` | `true` | 删除投影缓存记录（缓存可由日志重建，删除总是安全的） |
 | `pruneEmptyProjects` | `true` | 项目目录下最后一个会话被删后，删除空的 `--<project>--` 目录 |
 | `cascadeRoots` | `[]` | 额外按会话 id 清理的根目录，见 §5 |
@@ -320,13 +321,39 @@ cascadeRoots:
 
 ---
 
+## 7a. 释放仍在内存里的会话
+
+删文件只是删除的一半。DSH 里还打开着的会话，在 Host 的 `SessionStore` 中仍是活的 `Session`
+对象，它的 agent loop 仍可能往「已经不存在的日志目录」里追加事件——于是删除明明报成功，会话又
+被写回来了。所以开着 `allowDeleteLive` 时，插件**先释放**再删文件：
+
+1. **停止活动**。`workspaceRegistry.stopSessionActivity(id)`——就是 DSH 自己归档准入用的那条接缝。
+   Agent 注册表按用户自己的方式取消当前回合（`agent.cancel({ kind: 'user' })`），任务注册表逐个
+   kill 该会话的任务。这一步是 await 的，所以回合的收尾事件会先落盘。没有这条接缝时回落到
+   `ctx.parallel('workspace/session-stop', { sessionId })`，再回落到 `ctx.emit`。
+2. **从 store 摘除**。`sessions.liveEntryFor(session).detach()`——`SessionStore` 公开的释放入口：
+   把条目从 store 里删掉，并发出一条配对的 `session/disposed`。创建它的 fiber 之后再来调用自己的
+   disposer 会变成空操作，所以重复释放是安全的。
+3. **校验**。此时 `sessions.get(id)` 必须是 `undefined`。如果 detach 之后仍在 store 里，这次删除
+   报失败，而不是留下一个能把日志写回来的孤儿。
+
+这三步之后才动文件。每一步都单独兜错，所以缺 `sessions` 服务、或没有任何 stop 监听时，会降级成
+显式失败（`failed.stop` / `failed.release`），而不是抛异常。把 `releaseLive` 设成 `false` 可以回到
+旧行为：文件删掉、内存对象留着，结果里带
+`live session left in the in-memory store (releaseLive is off)` 这条警告。
+
+残留清理阶段同样会跑一次释放，所以部分失败后的重试也会把内存对象一并收掉。
+
+---
+
 ## 8. 已知限制
 
-- 删除存活会话（`allowDeleteLive: true`）后，页面里可能残留一个内存对象，需要刷新页面。
 - 不清理别的插件的会话索引（见 §2.6）。
 - 旧版单文件投影缓存布局不清理（安全第一）。
 - 面板的「全部」标签页在 `allowDeleteUnarchived: false` 时所有非归档行都不可删除——这是刻意的。
 - 没有内置的「回收站」；删除不可撤销，只有审计日志留痕。
+- `releaseLive` 依赖 `SessionStore` 暴露 `liveEntryFor()`；DSH 改掉该 API 时，删除会以
+  `failed.release` 失败而不是静默留下孤儿会话。
 
 ---
 
@@ -342,7 +369,7 @@ dsh-session-manager/
 │  ├─ encoder.js       # DSH 路径段编解码、id 校验
 │  ├─ scanner.js       # 唯一触碰文件系统的模块：扫描 / 删字节 / 包含性复验
 │  ├─ plan.js          # 纯策略：原因码与优先级
-│  ├─ delete.js        # 删除流水线：文件 → 登记 → 事件 → 审计
+│  ├─ delete.js        # 删除流水线：先释放内存中的会话，再文件 → 登记 → 事件 → 审计
 │  ├─ audit.js         # JSONL 审计
 │  ├─ ops.js           # 唯一的操作分发器（status/list/delete/restore/archive）
 │  └─ routes.js        # 两条 HTTP 适配器 + 回落路由的围栏

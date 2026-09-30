@@ -286,6 +286,7 @@ export function normalizeConfig(raw) -> { value: normalized, issues: [] }
 //   allowDeleteArchived: true
 //   allowDeleteUnarchived: false
 //   allowDeleteLive: false
+//   releaseLive: true         // stop+detach a still-live session before deleting
 //   purgeProjectionCache: true
 //   pruneEmptyProjects: true
 //   cascadeRoots: []          // string[]
@@ -296,8 +297,8 @@ export function normalizeConfig(raw) -> { value: normalized, issues: [] }
 //   routePath: ''             // '' => /api/session-manager
 //   fallbackRoutePath: ''     // '' => /session-manager/api
 //   managerDir: ''            // '' => <home>/session-manager
-export function publicConfig(normalized) -> { allowDeleteUnarchived, allowDeleteLive, dryRun,
-                                               purgeProjectionCache, maxBatch, enabled }
+export function publicConfig(normalized) -> { allowDeleteUnarchived, allowDeleteLive, releaseLive,
+                                               dryRun, purgeProjectionCache, maxBatch, enabled }
 ```
 
 `lib/encoder.js`
@@ -378,6 +379,16 @@ export async function readAuditTail(path, limit = 50) -> { lines: object[], erro
 5. `removeArtifacts(item, opts)` treats a missing/`null` `sources.dir` or `sources.cache`
    and an empty `sources.files` as "nothing to do", never as an error, and returns
    `freedBytes` (possibly 0) even when every step failed.
+6. `releaseLive: true` (default) — when the requested session is still in the in-memory
+   `SessionStore`, `lib/delete.js` releases it **before** removing files: stop the activity
+   through `workspaceRegistry.stopSessionActivity` (falling back to
+   `ctx.parallel('workspace/session-stop', { sessionId })`, then `ctx.emit`), then
+   `sessions.liveEntryFor(session).detach()`, then re-check `sessions.get(id) === undefined`.
+   `liveEntryFor` throwing "not live" counts as success; any other outcome fails the delete,
+   because a still-attached Session can append to the log directory after it was removed.
+   `releaseLive: false` keeps the legacy behaviour and records the warning
+   `live session left in the in-memory store (releaseLive is off)`.
+7. `status.capabilities` gained `releaseLive`; `publicConfig` includes `releaseLive`.
 
 ## 8. Testing rules
 

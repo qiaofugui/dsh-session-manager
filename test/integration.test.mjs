@@ -116,19 +116,37 @@ function fakeCtx(options = {}) {
       const at = pinned.indexOf(id);
       if (at >= 0) pinned.splice(at, 1);
     },
-    stopSessionActivity: async () => {},
+    ...(options.withoutSeam === true ? {} : {
+      stopSessionActivity: async (id) => {
+        if (options.failStop === true) throw new Error('stop refused');
+        stoppedSessions.push(id);
+      },
+    }),
   };
 
   const services = new Map();
   const emitted = [];
   const registeredEffect = [];
+  const stoppedSessions = [];
   if (options.persistence !== false) services.set('sessionPersistence', { root: options.root });
   if (options.withRegistry !== false) services.set('workspaceRegistry', registry);
   if (options.withSessions !== false) {
-    services.set('sessions', {
-      get: (id) => (live.has(id) ? { id } : undefined),
-      list: () => [...live].map((id) => ({ id })),
-    });
+    // Mirrors `SessionStore`: `get` returns the live object, `liveEntryFor`
+    // returns the store entry whose `detach()` removes it from the store and
+    // emits the paired `session/disposed`.
+    const store = new Map();
+    for (const id of live) store.set(id, { id });
+    const sessionsService = {
+      get: (id) => store.get(id),
+      list: () => [...store.keys()].map((id) => ({ id })),
+      liveEntryFor: (session) => ({ detach: () => store.delete(session.id) }),
+    };
+    if (options.detachFails === true) {
+      sessionsService.liveEntryFor = () => {
+        throw new Error('session "x" is not live in this store');
+      };
+    }
+    if (options.stopFails === true) sessionsService.__stopFails = true;    services.set('sessions', sessionsService);
   }
   if (options.withAgents !== false) {
     services.set('agents', { get: (id) => (running.has(id) ? { status: 'running' } : undefined) });
@@ -138,6 +156,11 @@ function fakeCtx(options = {}) {
     get: (key) => services.get(key),
     emit: (event, ...args) => {
       emitted.push([event, ...args]);
+    },
+    parallel: async (event, payload) => {
+      emitted.push([event, payload]);
+      const sessionsService = services.get('sessions');
+      if (sessionsService?.__stopFails === true) throw new Error('listener refused');
     },
     logger: { warn: () => {}, info: () => {} },
     effect: (execute) => {
@@ -157,7 +180,7 @@ function fakeCtx(options = {}) {
     },
   };
 
-  return { ctx, services, registry, workspaces, archived, pinned, live, running, emitted, registeredEffect };
+  return { ctx, services, registry, workspaces, archived, pinned, live, running, emitted, registeredEffect, stoppedSessions };
 }
 
 /** A fake `webServer`/`connection` pair that records what the plugin mounts. */
@@ -401,6 +424,105 @@ test('delete removes a live session when allowDeleteLive is set', async (t) => {
   const { body } = await dispatch(h.ctx, config, 'delete', { ids: [A] });
   assert.deepEqual(body.deleted, [A]);
   assert.equal(existsSync(fx.sessions[A]), false);
+});
+
+test('a live session is stopped and detached from the in-memory store', async (t) => {
+  const fx = await fixture();
+  t.after(fx.cleanup);
+  const h = fakeCtx({ root: fx.persistence, archived: [A], live: [A] });
+  const config = normalizeConfig({ allowDeleteLive: true }).value;
+  const { body } = await dispatch(h.ctx, config, 'delete', { ids: [A] });
+
+  const result = body.results[0];
+  assert.equal(result.ok, true);
+  assert.equal(result.removed.stopped, true, 'the running turn must be stopped first');
+  assert.equal(result.removed.detached, true, 'the session must leave the store');
+  assert.deepEqual(result.failed, {});
+  // The stop went through the registry seam the archive admission uses.
+  assert.deepEqual(h.stoppedSessions, [A]);
+  // Release happens before the files are gone, so a late append cannot resurrect them.
+  assert.equal(existsSync(fx.sessions[A]), false);
+  assert.equal(h.services.get('sessions').get(A), undefined, 'the store must no longer hold it');
+});
+
+test('the stop seam falls back to ctx.parallel when the registry has none', async (t) => {
+  const fx = await fixture();
+  t.after(fx.cleanup);
+  const h = fakeCtx({ root: fx.persistence, archived: [A], live: [A], withoutSeam: true });
+  const config = normalizeConfig({ allowDeleteLive: true }).value;
+  const { body } = await dispatch(h.ctx, config, 'delete', { ids: [A] });
+  assert.equal(body.results[0].ok, true);
+  assert.equal(body.results[0].removed.stopped, true);
+  assert.equal(body.results[0].removed.detached, true);
+  assert.ok(
+    h.emitted.some(([event]) => event === 'workspace/session-stop'),
+    'the fallback must still broadcast session-stop',
+  );
+});
+
+test('a release failure fails the delete instead of leaving an orphan', async (t) => {
+  const fx = await fixture();
+  t.after(fx.cleanup);
+  const h = fakeCtx({ root: fx.persistence, archived: [A], live: [A], detachFails: true });
+  const config = normalizeConfig({ allowDeleteLive: true }).value;
+  const { body } = await dispatch(h.ctx, config, 'delete', { ids: [A] });
+  assert.deepEqual(body.deleted, []);
+  assert.deepEqual(body.failedIds, [A]);
+  // The detach threw, so the session is still in the store: that must fail the
+  // delete rather than leave an orphan that can resurrect the log directory.
+  assert.equal(body.results[0].failed.release, 'session is still live after detach');
+  assert.ok(h.live.has(A), 'the session must still be in the store');
+  assert.equal(body.results[0].ok, false);
+});
+
+test('a failing stop is reported but does not block the detach', async (t) => {
+  const fx = await fixture();
+  t.after(fx.cleanup);
+  const h = fakeCtx({ root: fx.persistence, archived: [A], live: [A], failStop: true });
+  const config = normalizeConfig({ allowDeleteLive: true }).value;
+  const { body } = await dispatch(h.ctx, config, 'delete', { ids: [A] });
+  const result = body.results[0];
+  assert.deepEqual(result.failed.stop, 'stop refused');
+  assert.equal(result.removed.detached, true);
+  assert.equal(result.error, 'partial');
+});
+
+test('releaseLive off leaves a live session in memory, with a warning', async (t) => {
+  const fx = await fixture();
+  t.after(fx.cleanup);
+  const h = fakeCtx({ root: fx.persistence, archived: [A], live: [A] });
+  const config = normalizeConfig({ allowDeleteLive: true, releaseLive: false }).value;
+  const { body } = await dispatch(h.ctx, config, 'delete', { ids: [A] });
+  const result = body.results[0];
+  assert.equal(result.ok, true);
+  assert.equal(result.removed.detached, undefined);
+  assert.deepEqual(result.warnings, ['live session left in the in-memory store (releaseLive is off)']);
+  assert.equal(h.live.has(A), true);
+});
+
+test('a session that is not live reports no release work', async (t) => {
+  const fx = await fixture();
+  t.after(fx.cleanup);
+  const h = fakeCtx({ root: fx.persistence, archived: [A] });
+  const config = normalizeConfig({}).value;
+  const { body } = await dispatch(h.ctx, config, 'delete', { ids: [A] });
+  assert.equal(body.results[0].removed.release, 'not-live');
+  assert.deepEqual(body.results[0].failed, {});
+});
+
+test('residue cleanup also releases a session left in memory', async (t) => {
+  const fx = await fixture();
+  t.after(fx.cleanup);
+  const h = fakeCtx({ root: fx.persistence, archived: [GONE], live: [GONE] });
+  const config = normalizeConfig({}).value;
+  const { body } = await dispatch(h.ctx, config, 'delete', { ids: [GONE] });
+  const result = body.results[0];
+  assert.equal(result.removed.detached, true);
+  assert.equal(h.services.get('sessions').get(GONE), undefined, 'the store must no longer hold it');
+  assert.deepEqual(h.stoppedSessions, [GONE]);
+  assert.ok(h.emitted.some(([event]) => event === 'api-session/removed'));
+  assert.equal(result.ok, true);
+  assert.equal(body.skipped.some((entry) => entry.id === GONE), false, 'residue must not stay skipped');
 });
 
 test('delete refuses ids that escape the persistence root', async (t) => {

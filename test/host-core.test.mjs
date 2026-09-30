@@ -250,6 +250,7 @@ test('normalizeConfig fills every default and never throws', () => {
     allowDeleteArchived: true,
     allowDeleteUnarchived: false,
     allowDeleteLive: false,
+    releaseLive: true,
     purgeProjectionCache: true,
     pruneEmptyProjects: true,
     cascadeRoots: [],
@@ -337,6 +338,7 @@ test('publicConfig exposes only the safe slice', () => {
     enabled: true,
     allowDeleteUnarchived: false,
     allowDeleteLive: true,
+    releaseLive: true,
     dryRun: false,
     purgeProjectionCache: true,
     maxBatch: 7,
@@ -348,6 +350,7 @@ test('publicConfig exposes only the safe slice', () => {
     'enabled',
     'maxBatch',
     'purgeProjectionCache',
+    'releaseLive',
   ]);
   assert.equal(publicConfig(undefined).maxBatch, 200);
 });
