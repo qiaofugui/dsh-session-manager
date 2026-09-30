@@ -488,21 +488,17 @@ test('the release action is wired end to end in the bundle', () => {
 	assert.match(SOURCE, /callHost\('release', \{/);
 	assert.match(SOURCE, /currentSessionId: typeof currentSessionId === 'string' \? currentSessionId : ''/);
 
-	// The row offers it only where the Host said it applies.
+	// The row offers it only where the Host said it applies, and only for
+	// archived sessions: the plugin never archives on the user's behalf.
 	assert.match(SOURCE, /row\.releasable === true \? h\('button'/);
 	assert.match(SOURCE, /onRelease: releaseRows/);
 	assert.match(SOURCE, /releasable: releasable,/);
-	assert.match(SOURCE, /releasable = \(live \|\| running\) && !current/);
+	assert.match(SOURCE, /releasable = \(live \|\| running\) && !current && archived === true/);
 	assert.match(SOURCE, /t\('bulk\.release'/);
 
-	// The step that unblocks a released-but-unarchived session.
-	assert.match(SOURCE, /callHost\('archive', \{ ids: ids \}\)/);
-	assert.match(SOURCE, /onArchive: archiveRows/);
-	assert.match(SOURCE, /row\.archived !== true && row\.current !== true \? h\('button'/);
-	assert.match(SOURCE, /t\('bulk\.archive'/);
-	assert.match(SOURCE, /t\('notice\.releasedThenArchive'/);
-	assert.match(SOURCE, /t\('notice\.archived', \{ n: done \}\)/);
-	assert.match(SOURCE, /function needsArchive\(ids\)/);
+	// The bundle must not offer any archive action: that is the client's job.
+	assert.ok(!/archiveSessions|archiveRows|onArchive/.test(SOURCE), 'no archive action may be offered');
+	assert.ok(!/t\('bulk\.archive'|t\('row\.archive'/.test(SOURCE), 'no archive labels');
 
 	// The failure path surfaces the Host's own error code, not a bare "HTTP 400".
 	assert.match(SOURCE, /async function readErrorBody\(response\)/);

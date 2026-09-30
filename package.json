@@ -32,7 +32,7 @@
     "icon.svg",
     "docs/*.png",
     "README.md",
-    "README.zh-CN.md",
+    "README.en.md",
     "SPEC.md",
     "LICENSE"
   ],

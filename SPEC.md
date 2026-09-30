@@ -20,7 +20,7 @@ Package directory: `E:\test\dsh-session-manager\`
 | `test/host-core.test.mjs` | host-core |
 | `client.js`, `locale/en.json`, `locale/zh.json`, `icon.svg` | client-ui |
 | `test/client.test.mjs` | client-ui |
-| `test/integration.test.mjs`, `README.md`, `README.zh-CN.md` | Lead |
+| `test/integration.test.mjs`, `README.md`, `README.en.md` | Lead |
 
 ## 1. Environment facts (verified, do not re-derive)
 

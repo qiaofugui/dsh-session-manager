@@ -97,8 +97,6 @@ window.__ModuleLoader__.load({
 			'badge.pinned': '已置顶',
 			'row.delete': '删除',
 			'row.restore': '恢复',
-			'row.archive': '归档',
-			'row.archive.title': '把此会话加入归档集合；归档后即可删除。日志仍保留在磁盘上。',
 			'row.release': '释放',
 			'row.release.title': '从内存中释放此会话：停止正在运行的回合，日志保留在磁盘上。释放后即可删除。',
 			'bulk.selected': '已选 {n} 项',
@@ -106,7 +104,6 @@ window.__ModuleLoader__.load({
 			'bulk.clear': '取消选择',
 			'bulk.delete': '删除选中 ({n})',
 			'bulk.restore': '恢复选中 ({n})',
-			'bulk.archive': '归档选中 ({n})',
 			'bulk.release': '释放选中 ({n})',
 			'bulk.hint': '勾选会话后可批量删除或恢复。',
 			'select.row': '选择会话 {id}',
@@ -133,11 +130,7 @@ window.__ModuleLoader__.load({
 			'notice.skipped': '已跳过 {n} 个不可删除的会话（含当前会话或未归档会话）',
 			'notice.nothingSelected': '请先选择要操作的会话',
 			'notice.nothingReleasable': '所选会话都无需释放（只有仍在内存中的会话可以释放）',
-			'notice.nothingArchivable': '所选会话都已归档（或包含当前会话）',
-			'notice.archived': '已归档 {n} 个会话，现在可以删除',
-			'notice.archiveFailed': '归档失败：{message}',
 			'notice.released': '已释放 {n} 个会话，日志仍保留在磁盘上',
-			'notice.releasedThenArchive': '已释放 {n} 个会话；其中未归档的需要先归档才能删除',
 			'notice.releasedPartly': '已释放 {n} 个，{m} 个失败',
 			'notice.releaseFailed': '释放失败：{message}',
 			'notice.currentOnly': '当前打开的会话不能删除，已取消操作',
@@ -216,8 +209,6 @@ window.__ModuleLoader__.load({
 			'badge.pinned': 'Pinned',
 			'row.delete': 'Delete',
 			'row.restore': 'Restore',
-			'row.archive': 'Archive',
-			'row.archive.title': 'Add this session to the archive set; it becomes deletable afterwards. The log stays on disk.',
 			'row.release': 'Release',
 			'row.release.title': 'Free this session from memory: stop the running turn, keep the log on disk. Deleting becomes possible afterwards.',
 			'bulk.selected': '{n} selected',
@@ -225,7 +216,6 @@ window.__ModuleLoader__.load({
 			'bulk.clear': 'Clear selection',
 			'bulk.delete': 'Delete selected ({n})',
 			'bulk.restore': 'Restore selected ({n})',
-			'bulk.archive': 'Archive selected ({n})',
 			'bulk.release': 'Release selected ({n})',
 			'bulk.hint': 'Tick sessions to delete or restore them in bulk.',
 			'select.row': 'Select session {id}',
@@ -252,11 +242,7 @@ window.__ModuleLoader__.load({
 			'notice.skipped': 'Skipped {n} non-deletable sessions (current or unarchived)',
 			'notice.nothingSelected': 'Select at least one session first',
 			'notice.nothingReleasable': 'None of the selected sessions need releasing (only sessions still held in memory can be)',
-			'notice.nothingArchivable': 'Every selected session is already archived (or is the current session)',
-			'notice.archived': 'Archived {n} sessions; they can be deleted now',
-			'notice.archiveFailed': 'Archive failed: {message}',
 			'notice.released': 'Released {n} sessions; their logs stay on disk',
-			'notice.releasedThenArchive': 'Released {n} sessions; the ones that were not archived need archiving before they can be deleted',
 			'notice.releasedPartly': 'Released {n}, {m} failed',
 			'notice.releaseFailed': 'Release failed: {message}',
 			'notice.currentOnly': 'The currently open session cannot be deleted; the request was cancelled',
@@ -661,29 +647,17 @@ window.__ModuleLoader__.load({
 			return callHost('delete', { ids: ids, dryRun: dryRun === true });
 		}
 
-		async function restoreSessions(ids) {
-			return callHost('restore', { ids: ids });
-		}
-
 		/**
-		 * Archive sessions. This is the step between "released" and "deletable":
-		 * releasing keeps the log on disk, and a session that was never archived
-		 * stays refused for deletion until it is archived (or the operator turns
-		 * `allowDeleteUnarchived` on).
-		 * @param ids - session ids to archive.
-		 * @returns the same shape every other op returns.
-		 */
-		async function archiveSessions(ids) {
-			return callHost('archive', { ids: ids });
-		}
-
-		/**
-		 * Free the in-memory copies of sessions, keeping their logs on disk.
+		 * Free the in-memory copies of archived sessions, keeping their logs on disk.
 		 *
-		 * This is what unblocks a `live`/`running` row: the Host stops the running
+		 * This is what unblocks a live/running row: the Host stops the running
 		 * turn and drops the session from its store, after which the row becomes
 		 * deletable on its own merits. Nothing on disk is touched, so the list is
 		 * re-fetched rather than the row being dropped locally.
+		 *
+		 * Only archived sessions are actionable — this plugin manages what the user
+		 * archived in the official client and never archives on their behalf, so the
+		 * Host refuses an unarchived id and the UI never offers the action for one.
 		 * @param ids - session ids to release.
 		 * @param currentSessionId - the open session, which the Host refuses to release.
 		 * @returns the same shape every other op returns.
@@ -693,6 +667,11 @@ window.__ModuleLoader__.load({
 				ids: ids,
 				currentSessionId: typeof currentSessionId === 'string' ? currentSessionId : '',
 			});
+		}
+
+		/** Unarchive a batch: the only archive-set write this plugin makes. */
+		async function restoreSessions(ids) {
+			return callHost('restore', { ids: ids });
 		}
 
 		function markRemoved(ids) {
@@ -854,12 +833,14 @@ window.__ModuleLoader__.load({
 			if (current) skipReason = 'current';
 			var deletable = host && typeof host.deletable === 'boolean' && !current ? host.deletable === true : skipReason === null;
 
-			// "Release" frees the in-memory session while the log stays on disk, so it is
-			// offered exactly where a delete is refused for being live or running — never
-			// for the open session, which must stay attached to the running UI.
+			// "Release" frees the in-memory session while the log stays on disk, so it
+			// is offered exactly where a delete is refused for being live or running —
+			// never for the open session, which must stay attached to the running UI.
+			// Archived sessions only: the plugin never archives, so an unarchived
+			// session is not actionable here even while it is still in memory.
 			var releasable = false;
 			if (host && typeof host.releasable === 'boolean') releasable = host.releasable;
-			else releasable = (live || running) && !current;
+			else releasable = (live || running) && !current && archived === true;
 
 			return {
 				id: id,
@@ -1503,15 +1484,7 @@ window.__ModuleLoader__.load({
 						onClick: function () {
 							props.onRestore([row.id]);
 						},
-					}, t('row.restore')) : null,
-					row.archived !== true && row.current !== true ? h('button', {
-						type: 'button',
-						style: buttonStyle('ghost', false),
-						title: t('row.archive.title'),
-						onClick: function () {
-							props.onArchive([row.id]);
-						},
-					}, t('row.archive')) : null));
+					}, t('row.restore')) : null));
 		}
 
 		function SessionManagerPage(props) {
@@ -1595,20 +1568,6 @@ window.__ModuleLoader__.load({
 				return out;
 			}, [allRows, selectedIds]);
 
-			// The subset of the selection that is on disk but not archived yet. This is
-			// the step that turns a released session into a deletable one.
-			var archivableSelected = useMemo(function () {
-				var out = [];
-				for (var index = 0; index < selectedIds.length; index += 1) {
-					for (var scan = 0; scan < allRows.length; scan += 1) {
-						if (allRows[scan].id !== selectedIds[index]) continue;
-						if (allRows[scan].archived !== true && allRows[scan].current !== true) out.push(selectedIds[index]);
-						break;
-					}
-				}
-				return out;
-			}, [allRows, selectedIds]);
-
 			function requestDelete(ids, rows) {
 				var provided = rows && rows.length > 0 ? rows : rowsForIds(allRows, ids);
 				var deletable = [];
@@ -1646,15 +1605,6 @@ window.__ModuleLoader__.load({
 				if (summary && summary.retainedBy && toNumber(summary.retainedBy.mainView) > 0) return ids[index];
 			}
 			return '';
-		}
-
-		/** Whether any of the released ids was not archived, and so still needs archiving. */
-		function needsArchive(ids) {
-			for (var index = 0; index < visible.length; index += 1) {
-				if (ids.indexOf(visible[index].id) === -1) continue;
-				if (visible[index].archived !== true) return true;
-			}
-			return false;
 		}
 
 		function releaseRows(ids) {
@@ -1695,11 +1645,6 @@ window.__ModuleLoader__.load({
 				var done = Array.isArray(body.released) ? body.released.length : releasable.length;
 				if (Array.isArray(body.failedIds) && body.failedIds.length > 0) {
 					pushNotice('warning', t('notice.releasedPartly', { n: done, m: body.failedIds.length }));
-				} else if (needsArchive(releasable)) {
-					// Releasing does not archive: a session that was never archived is
-					// still refused for deletion, so say so instead of leaving the user
-					// to discover a disabled delete button.
-					pushNotice('warning', t('notice.releasedThenArchive', { n: done }));
 				} else {
 					pushNotice('success', t('notice.released', { n: done }));
 				}
@@ -1714,60 +1659,30 @@ window.__ModuleLoader__.load({
 			});
 		}
 
-		function archiveRows(ids) {
+	function restoreRows(ids) {
 			if (!ids || ids.length === 0) {
 				pushNotice('info', t('notice.nothingSelected'));
 				return;
 			}
-			var archivable = [];
-			for (var index = 0; index < visible.length; index += 1) {
-				if (ids.indexOf(visible[index].id) === -1) continue;
-				if (visible[index].archived !== true && visible[index].current !== true) archivable.push(visible[index].id);
-			}
-			if (archivable.length === 0) {
-				pushNotice('warning', t('notice.nothingArchivable'));
-				return;
-			}
-			archiveSessions(archivable).then(function (result) {
+			restoreSessions(ids).then(function (result) {
 				if (result.ok !== true) {
-					pushNotice('error', t('notice.archiveFailed', { message: result.error }));
+					pushNotice('error', t('notice.restoreFailed', { message: result.error }));
 					return;
 				}
 				var body = result.body || {};
-				var done = Array.isArray(body.results) ? body.results.filter(function (entry) {
+				var restored = Array.isArray(body.results) ? body.results.filter(function (entry) {
 					return entry && entry.ok === true;
-				}).length : archivable.length;
-				pushNotice('success', t('notice.archived', { n: done }));
+				}).length : ids.length;
+				removedBus.set(function (current) {
+					var next = new Set(current);
+					for (var index = 0; index < ids.length; index += 1) next.delete(ids[index]);
+					return next;
+				});
+				pushNotice('success', t('notice.restored', { n: restored }));
 				safeRefreshHost();
 			}, function (error) {
-				pushNotice('error', t('notice.archiveFailed', { message: describeError(error) }));
+				pushNotice('error', t('notice.restoreFailed', { message: describeError(error) }));
 			});
-		}
-
-		function restoreRows(ids) {
-				if (!ids || ids.length === 0) {
-					pushNotice('info', t('notice.nothingSelected'));
-					return;
-				}
-				restoreSessions(ids).then(function (result) {
-					if (result.ok !== true) {
-						pushNotice('error', t('notice.restoreFailed', { message: result.error }));
-						return;
-					}
-					var body = result.body || {};
-					var restored = Array.isArray(body.results) ? body.results.filter(function (entry) {
-						return entry && entry.ok === true;
-					}).length : ids.length;
-					removedBus.set(function (current) {
-						var next = new Set(current);
-						for (var index = 0; index < ids.length; index += 1) next.delete(ids[index]);
-						return next;
-					});
-					pushNotice('success', t('notice.restored', { n: restored }));
-					safeRefreshHost();
-				}, function (error) {
-					pushNotice('error', t('notice.restoreFailed', { message: describeError(error) }));
-				});
 			}
 
 			function toggleRow(row) {
@@ -1843,7 +1758,7 @@ window.__ModuleLoader__.load({
 							requestDelete(ids, rowsForIds(allRows, ids));
 						},
 						onRelease: releaseRows,
-						onArchive: archiveRows,
+
 						onRestore: restoreRows,
 					});
 				}));
@@ -1924,25 +1839,16 @@ window.__ModuleLoader__.load({
 						onClick: function () {
 							restoreRows(selectedIds);
 						},
-					}, t('bulk.restore', { n: selectedIds.length })),
-					h('button', {
-					type: 'button',
-					style: buttonStyle('ghost', releasableSelected.length === 0),
-					disabled: releasableSelected.length === 0,
-					title: releasableSelected.length === 0 ? t('notice.nothingReleasable') : t('row.release.title'),
-					onClick: function () {
-					releaseRows(releasableSelected);
-					},
-					}, t('bulk.release', { n: releasableSelected.length })),
-					h('button', {
+						}, t('bulk.restore', { n: selectedIds.length })),
+						h('button', {
 						type: 'button',
-						style: buttonStyle('ghost', archivableSelected.length === 0),
-						disabled: archivableSelected.length === 0,
-						title: archivableSelected.length === 0 ? t('notice.nothingArchivable') : t('row.archive.title'),
+						style: buttonStyle('ghost', releasableSelected.length === 0),
+						disabled: releasableSelected.length === 0,
+						title: releasableSelected.length === 0 ? t('notice.nothingReleasable') : t('row.release.title'),
 						onClick: function () {
-							archiveRows(archivableSelected);
+						releaseRows(releasableSelected);
 						},
-					}, t('bulk.archive', { n: archivableSelected.length })),
+					}, t('bulk.release', { n: releasableSelected.length })),
 					selectedIds.length === 0 ? null : h('button', {
 						type: 'button',
 						style: buttonStyle('ghost', false),

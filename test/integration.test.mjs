@@ -510,39 +510,40 @@ test('a session that is not live reports no release work', async (t) => {
   assert.deepEqual(body.results[0].failed, {});
 });
 
-test('release, then archive, then delete is the full path for an unarchived live session', async (t) => {
+test('an unarchived session cannot be released, deleted or listed as releasable', async (t) => {
   const fx = await fixture();
   t.after(fx.cleanup);
-  // A live session that was never archived: the common case for a running one.
+  // A live session that was never archived: not this plugin's business at all.
   const h = fakeCtx({ root: fx.persistence, archived: [], live: [A] });
   const config = normalizeConfig({}).value;
 
-  // 1. delete is refused twice over: live, and not archived.
   const first = await dispatch(h.ctx, config, 'delete', { ids: [A] });
-  assert.deepEqual(first.body.deleted, []);
   assert.deepEqual(first.body.skipped, [{ id: A, reason: 'live' }]);
-
-  // 2. releasing frees the memory and keeps every artifact.
-  const released = await dispatch(h.ctx, config, 'release', { ids: [A] });
-  assert.deepEqual(released.body.released, [A]);
-  assert.equal(released.body.results[0].removed.detached, true);
   assert.equal(existsSync(fx.sessions[A]), true);
 
-  // 3. now it is merely on disk and unarchived, so deletion is still refused —
-  //    but for the reason the UI can act on.
-  const second = await dispatch(h.ctx, config, 'delete', { ids: [A] });
-  assert.deepEqual(second.body.skipped, [{ id: A, reason: 'not-archived' }]);
+  // Releasing is refused for the same reason: the archive set is the entry gate.
+  const released = await dispatch(h.ctx, config, 'release', { ids: [A] });
+  assert.deepEqual(released.body.released, []);
+  assert.deepEqual(released.body.skipped, [{ id: A, reason: 'not-archived' }]);
+  assert.equal(h.live.has(A), true, 'the session must stay in the store');
+
+  // And the panel is never told it could release it.
   const row = await dispatch(h.ctx, config, 'list', {});
   const entry = row.body.items.find((item) => item.id === A);
-  assert.equal(entry.live, false);
-  assert.equal(entry.archived, false);
+  assert.equal(entry.releasable, false);
   assert.equal(entry.deletable, false);
-  assert.equal(entry.releasable, false, 'nothing left to release');
 
-  // 4. archive it, and the delete finally lands.
-  const archived = await dispatch(h.ctx, config, 'archive', { ids: [A] });
-  assert.equal(archived.body.ok, true);
-  assert.deepEqual(h.archived, [A]);
+  // Once the user archives it in the official client, both open up.
+  h.archived.push(A);
+  const after = await dispatch(h.ctx, config, 'list', {});
+  const archivedRow = after.body.items.find((item) => item.id === A);
+  assert.equal(archivedRow.releasable, true);
+  assert.equal(archivedRow.deletable, false, 'still live, so still not deletable');
+  assert.equal(archivedRow.skipReason, 'live');
+
+  const releasedAfter = await dispatch(h.ctx, config, 'release', { ids: [A] });
+  assert.deepEqual(releasedAfter.body.released, [A]);
+
   const deleted = await dispatch(h.ctx, config, 'delete', { ids: [A] });
   assert.deepEqual(deleted.body.deleted, [A]);
   assert.equal(existsSync(fx.sessions[A]), false);
@@ -636,23 +637,24 @@ test('release is refused when releaseLive is off or the store is missing', async
   assert.equal(missing.body.error, 'sessions-unavailable');
 });
 
-test('list marks the rows that can be released', async (t) => {
+test('list marks the rows that can be released, archived only', async (t) => {
   const fx = await fixture();
   t.after(fx.cleanup);
-  const h = fakeCtx({ root: fx.persistence, archived: [A, B], live: [A], running: [D] });
+  const h = fakeCtx({ root: fx.persistence, archived: [A], live: [A, D], running: [D] });
   const config = normalizeConfig({}).value;
   const { body } = await dispatch(h.ctx, config, 'list', { currentSessionId: B });
   const rows = new Map(body.items.map((item) => [item.id, item]));
-  assert.equal(rows.get(A).releasable, true, 'a live, non-open row is releasable');
+  assert.equal(rows.get(A).releasable, true, 'a live, archived, non-open row is releasable');
   assert.equal(rows.get(A).live, true);
   assert.equal(rows.get(A).deletable, false);
   assert.equal(rows.get(A).skipReason, 'live');
-  // B is the open session: it is neither releasable nor deletable.
+  // D runs too, but it is not archived, so it is nobody's business here.
+  assert.equal(rows.get(D).releasable, false);
+  assert.equal(rows.get(D).running, true);
+  assert.equal(rows.get(D).skipReason, 'running');
+  // B is the open session.
   assert.equal(rows.get(B).releasable, false);
   assert.equal(rows.get(B).current, true);
-  // D runs and is not archived, so both are offered.
-  assert.equal(rows.get(D).releasable, true);
-  assert.equal(rows.get(D).running, true);
 });
 
 test('delete refuses ids that escape the persistence root', async (t) => {
@@ -769,7 +771,7 @@ test('allowDeleteArchived false protects every archived session', async (t) => {
   assert.equal(existsSync(fx.sessions[B]), true);
 });
 
-test('restore and archive drive the registry', async (t) => {
+test('restore drives the registry, and there is deliberately no archive op', async (t) => {
   const fx = await fixture();
   t.after(fx.cleanup);
   const h = fakeCtx({ root: fx.persistence, archived: [A] });
@@ -778,15 +780,16 @@ test('restore and archive drive the registry', async (t) => {
   assert.deepEqual(restored.body.failedIds, []);
   assert.deepEqual(h.archived, []);
 
+  // Archiving belongs to the official client; the plugin must not offer it.
   const archived = await dispatch(h.ctx, normalizeConfig({}).value, 'archive', { ids: [B] });
-  assert.deepEqual(archived.body.failedIds, []);
-  assert.deepEqual(h.archived, [B]);
+  assert.equal(archived.status, 400);
+  assert.equal(archived.body.error, 'unknown-op');
 
-  const refused = await dispatch(h.ctx, normalizeConfig({}).value, 'archive', { ids: ['../x'] });
+  const refused = await dispatch(h.ctx, normalizeConfig({}).value, 'restore', { ids: ['../x'] });
   assert.equal(refused.body.results[0].error, 'invalid-id');
 });
 
-test('restore and archive degrade to 503 without a workspace registry', async (t) => {
+test('restore degrades to 503 without a workspace registry', async (t) => {
   const fx = await fixture();
   t.after(fx.cleanup);
   const h = fakeCtx({ root: fx.persistence, withRegistry: false });
