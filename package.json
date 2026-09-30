@@ -1,0 +1,64 @@
+{
+  "name": "dsh-session-manager",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "DSH 归档会话管理器：在 Web UI 里浏览、恢复并永久删除会话（会话日志、投影缓存与工作区登记一并清理），像 Codex 那样可彻底删除。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "dsh-plugins",
+    "session",
+    "archive",
+    "delete",
+    "session-manager",
+    "deepseek-harness",
+    "归档会话",
+    "会话管理"
+  ],
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "icon": "./icon.svg",
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "lib/**/*.js",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "README.zh-CN.md",
+    "SPEC.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dshTarget": "0.2.0-rc.2",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qiaofugui/dsh-session-manager.git"
+  },
+  "homepage": "https://github.com/qiaofugui/dsh-session-manager#readme",
+  "bugs": {
+    "url": "https://github.com/qiaofugui/dsh-session-manager/issues"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  }
+}

@@ -1,0 +1,44 @@
+# dsh-session-manager — loader patch for this bundle.
+#
+# This file is read by the Host Loader; `insert` appends the plugin row to the
+# profile composition. A user profile may override this same row (matching `id`)
+# in its own cordis.patch.yml to change the config; a matching override replaces
+# the complete `config`, so repeat every key you want to keep.
+- insert:
+    - id: dsh-session-manager
+      name: dsh-session-manager
+      # Every key below is optional; the plugin's Config Schema applies the
+      # defaults shown, and unknown keys are ignored for forward compatibility.
+      config:
+        # Master switch. `false` loads the row but registers nothing.
+        enabled: true
+        # Deleting an archived session is the plugin's purpose.
+        allowDeleteArchived: true
+        # Also allow deleting a session that is not in the archive set.
+        # Flip to true to use the panel's "全部" tab for cleanup of any session.
+        allowDeleteUnarchived: false
+        # Allow deleting a session that is currently open (live) in the Host.
+        # The page then needs a reload to drop a stale in-memory session.
+        allowDeleteLive: false
+        # Remove the derived projection cache record for the session. Always
+        # safe: the cache regenerates from the session log.
+        purgeProjectionCache: true
+        # Remove the `--<project>--` directory once its last session is gone.
+        pruneEmptyProjects: true
+        # Extra directories that hold per-session artifacts named by the session
+        # id. Only `<root>/<id>.json`, `<root>/<id>`, `<root>/sessions/<id>.json`
+        # and `<root>/sessions/<id>` are considered. Empty by default because
+        # other plugins' indexes are their own; see README "级联清理".
+        cascadeRoots: []
+        # Session ids that must never be deleted from the UI.
+        protectedSessionIds: []
+        # Upper bound on one delete request.
+        maxBatch: 200
+        # Report what would be deleted without touching the disk.
+        dryRun: false
+        # Audit log path; '' means <DSH_HOME>/session-manager/deleted.jsonl.
+        auditLog: ''
+        # Override the two mounted routes; '' selects the defaults
+        # /api/session-manager (authenticated) and /session-manager/api (raw).
+        routePath: ''
+        fallbackRoutePath: ''

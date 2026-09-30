@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session manager",
+    "description": "Browse archived sessions and permanently delete their logs, projection cache and archive records."
+  }
+}
